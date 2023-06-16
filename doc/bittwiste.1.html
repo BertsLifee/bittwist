@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bittwiste.1</title>
+    <meta name="description" content="bittwiste -- pcap capture file editor">
+</head>
+<body>
+<pre>
+BITTWISTE(1)                General Commands Manual               BITTWISTE(1)
+
+
+
+NAME
+       bittwiste -- pcap capture file editor
+
+SYNOPSIS
+       bittwiste [ -I input ] [ -O output ] [ -L layer ] [ -X payload ]
+                 [ -C ] [ -M linktype ] [ -D offset ] [ -R range ]
+                 [ -S timeframe ] [ -N repeat ] [ -P seed ] [ -T header ]
+                 [ header-specific-options ] [ -h ]
+
+DESCRIPTION
+       This document describes the bittwiste program, the pcap(3) capture file
+       editor. Bittwiste is designed to work only with  Ethernet  frame,  e.g.
+       link  type  DLT_EN10MB  in  pcap(3),  with a maximum frame size of 1514
+       bytes which is equivalent to an MTU of 1500 bytes, 14 bytes for  Ether-
+       net header.
+
+       Bittwiste can currently edit Ethernet, ARP, IPv4, IPv6, ICMPv4, ICMPv6,
+       TCP, and UDP headers. IPv6  packets  with  extension  headers  or  next
+       header  field  not matching ICMPv6, TCP, or UDP are not supported; bit-
+       twiste will simply write such packets as is to output trace file as  it
+       encounters them in the input trace file.
+
+       If  run  with the -X flag, you can append your own payload after any of
+       the supported headers; specified using the -L and  -T  flag.  Bittwiste
+       will,  if not run with the -C flag, recalculate the checksums for IPv4,
+       ICMPv4, ICMPv6, TCP, and UDP headers, except for the last fragment of a
+       fragmented IPv4 datagram; bittwiste does not currently support checksum
+       correction for the last fragment of a fragmented IPv4 datagram.
+
+       While parsing the packets in an input trace file, bittwiste will  skip,
+       i.e.  write to output trace file as is, any truncated packet, for exam-
+       ple, an ICMPv4 packet with a captured length of 25 bytes  (we  need  at
+       least  28  bytes; 14 bytes for Ethernet header, minimum 20 bytes for IP
+       header, and 4 bytes for ICMPv4 header) does not give enough information
+       on its ICMPv4 header for bittwiste to read and modify it. In this case,
+       you can utilize the -L and -T flag to copy the original  packet  up  to
+       its  IP header and append your customized ICMPv4 header and data to the
+       packet using the -X flag.  When  specifying  payload  that  covers  the
+       ICMPv4,  ICMPv6,  TCP,  or  UDP header and its data, you can use zeros,
+       e.g. 0000 for 2 bytes of zeros, for the header checksum which  is  then
+       corrected automatically by bittwiste.
+
+       In  order  to simplify the way options are specified, you can only edit
+       packets of a specific type supplied to the -T  flag  per  execution  of
+       bittwiste  on an input trace file. In addition, the -T flag must appear
+       last among the general options which are the -I, -O, -L,  -X,  -C,  -M,
+       -D, -R, -S, -N, and -P flag.
+
+OPTIONS
+       -I input
+              Input  pcap  based trace file. Typically, input should be a file
+              path to a pcap based trace file. However, for  convenience,  the
+              following  template  names  are also accepted to load trace file
+              from one of the built-in templates:
+
+              eth    : Ethernet header
+              arp    : ARP header
+              ip     : IPv4 header
+              ip6    : IPv6 header
+              icmp   : ICMPv4 header
+              icmp6  : ICMPv6 header
+              tcp    : IPv4 TCP header
+              ip6tcp : IPv6 TCP header
+              udp    : IPv4 UDP header
+              ip6udp : IPv6 UDP header
+
+              Example: -I icmp
+
+       -O output
+              Output trace file.
+
+       -L layer
+              Copy up to the specified layer and discard the  remaining  data.
+              Value  for layer must be either 2, 3, or 4 where 2 for Ethernet,
+              3 for ARP, IPv4, or IPv6, and 4 for ICMPv4, ICMPv6, TCP, or UDP.
+
+       -X payload
+              Append payload in hex digits to the end of each packet.
+              Example: -X 0302aad1
+              -X flag is ignored if -L and -T flag are not specified.
+
+       -C     Specify this flag to disable checksum correction. Checksum  cor-
+              rection is applicable for non-fragmented supported packets only.
+
+       -M linktype
+              Replace  the linktype stored in the pcap file header. Typically,
+              value for linktype is 1 for Ethernet.
+              Example: -M 12 (for raw IP), -M 51 (for PPPoE)
+
+              For the complete list, see:
+              https://www.tcpdump.org/linktypes.html
+
+       -D offset
+              Delete the specified byte offset from each packet.
+              First byte (starting from link layer header) starts from 1.
+              -L, -X, -C and -T flag are ignored if -D flag is specified.
+              Example: -D 15-40, -D 10, or -D 18-9999
+
+       -R range
+              Save only the specified range of packets.
+              Example: -R 5-21 or -R 9
+
+       -S timeframe
+              Save only the packets within the specified timeframe with up  to
+              one-second  resolution  using  DD/MM/YYYY,HH:MM:SS as the format
+              for start and end time in timeframe.
+              Example: -S 22/10/2006,21:47:35-24/10/2006,13:16:05
+              -S flag is evaluated after -R flag.
+
+       -N repeat
+              Duplicate packets from the input trace file  repeat  times.  Use
+              this flag to create a stream of packets, each with, for example,
+              a random tcp sequence number, from a 1-packet trace file.
+              Example: -N 100000
+              -N flag is evaluated after -R and -S flag.
+
+       -P seed
+              Positive integer to seed the random number generator (RNG) used,
+              for  example,  to generate random port number. If unset, current
+              timestamp will be used as the RNG seed.
+
+              bittwiste uses Mersenne Twister for  high-speed  uniformly  dis-
+              tributed random number generation.
+
+       -T header
+              Edit  only  the  specified  header. Possible keywords for header
+              are, eth, arp, ip, ip6, icmp, icmp6, tcp, or udp. -T  flag  must
+              appear last among the general options.
+
+       -h     Print version information and usage.
+
+       header-specific-options
+              Each  packet  that  matches  the type supplied to the -T flag is
+              modified based on the options described below:
+
+              Options for eth (RFC 894):
+
+              -d dmac or omac,nmac
+                     Destination MAC address. Example: -d 00:08:55:64:65:6a
+                     If omac and nmac are specified, any instances of omac  in
+                     the  destination  MAC address field will be replaced with
+                     nmac.
+
+              -s smac or omac,nmac
+                     Source MAC address. Example: -s 00:13:20:3e:ab:cf
+                     If omac and nmac are specified, any instances of omac  in
+                     the source MAC address field will be replaced with nmac.
+
+              -t type
+                     EtherType.  Possible  keywords for type are, ip, ip6, and
+                     arp only.
+
+              Options for arp (RFC 826):
+
+              -o opcode
+                     Operation code in integer value between 0 to  65535.  For
+                     example,  you  can set opcode to 1 for ARP request, 2 for
+                     ARP reply.
+
+              -s smac or omac,nmac
+                     Sender MAC address. Example: -s 00:13:20:3e:ab:cf
+                     If omac and nmac are specified, any instances of omac  in
+                     the sender MAC address field will be replaced with nmac.
+
+              -p sip or oip,nip
+                     Sender IP address. Example: -p 192.168.0.1
+                     If oip and nip are specified, any instances of oip in the
+                     sender IP address field will be replaced with nip.
+
+              -t tmac or omac,nmac
+                     Target MAC address. Example: -t 00:08:55:64:65:6a
+                     If omac and nmac are specified, any instances of omac  in
+                     the target MAC address field will be replaced with nmac.
+
+              -q tip or oip,nip
+                     Target IP address. Example: -q 192.168.0.2
+                     If oip and nip are specified, any instances of oip in the
+                     target IP address field will be replaced with nip.
+
+              Options for ip (RFC 791):
+
+              -c ds_field
+                     6-bit DS field (first 6-bit  of  8-bit  type  of  service
+                     field).
+
+                     Some  of the service class name mapping to ds_field value
+                     from RFC 4594:
+
+                     0  : Standard (CS0)
+                     8  : Low-priority data (CS1)
+                     16 : OAM (CS2)
+                     24 : Broadcast video (CS3)
+                     32 : Real-time interactive (CS4)
+
+                     Example: -c 16 or -c 0x10 (to classify packet for  opera-
+                     tion and management of the network)
+
+                     For  more  information  on DS field, see RFC 2474 and RFC
+                     4594.
+
+              -e ecn_field
+                     2-bit ECN field (last 2-bit  of  8-bit  type  of  service
+                     field).
+
+                     ecn_field can be set to one of the 4 values below:
+
+                     0 : Not-ECT
+                     1 : ECT(1)
+                     2 : ECT(0)
+                     3 : CE
+
+                     Example:  -e  3 or -e 0x03 (to indicate congestion to the
+                     end hosts)
+
+                     For more information on ECN field, see RFC 3168.
+
+              -i id
+                     Identification in integer value between 0 to 65535.
+
+              -f flags
+                     Control flags. Possible characters for flags are:
+
+                     - : remove all flags
+                     r : set the reserved flag
+                     d : set the don't fragment flag
+                     m : set the more fragment flag
+
+                     Example: -f d
+                     If any of the flags is specified, all original flags  are
+                     removed automatically.
+
+              -o offset
+                     Fragment offset in integer value between 0 to 7770. Value
+                     for offset represents the number of 64-bit segments  con-
+                     tained  in  earlier  fragments which must not exceed 7770
+                     (62160 bytes).
+
+              -t ttl
+                     Time to live in integer value between 0 to 255 (millisec-
+                     onds).
+
+              -p proto
+                     Protocol  number  in integer value between 0 to 255. Some
+                     common protocol numbers are:
+
+                     1  : Internet Control Message Protocol (ICMPv4)
+                     6  : Transmission Control Protocol (TCP)
+                     17 : User Datagram Protocol (UDP)
+
+                     For the complete list, see:
+                     https://www.iana.org/assignments/protocol-numbers
+
+              -s sip or oip,nip
+                     Source IP address. Example: -s 192.168.0.1
+                     If oip and nip are specified, any instances of oip in the
+                     source IP address field will be replaced with nip.
+
+              -d dip or oip,nip
+                     Destination IP address. Example: -d 192.168.0.2
+                     If oip and nip are specified, any instances of oip in the
+                     destination IP address field will be replaced with nip.
+
+              Options for ip6 (RFC 8200):
+
+              -c ds_field
+                     6-bit DS  field  (first  6-bit  of  8-bit  traffic  class
+                     field).
+
+                     Some  of the service class name mapping to ds_field value
+                     from RFC 4594:
+
+                     0  : Standard (CS0)
+                     8  : Low-priority data (CS1)
+                     16 : OAM (CS2)
+                     24 : Broadcast video (CS3)
+                     32 : Real-time interactive (CS4)
+
+                     Example: -c 16 or -c 0x10 (to classify packet for  opera-
+                     tion and management of the network)
+
+                     For  more  information  on DS field, see RFC 2474 and RFC
+                     4594.
+
+              -e ecn_field
+                     2-bit ECN  field  (last  2-bit  of  8-bit  traffic  class
+                     field).
+
+                     ecn_field can be set to one of the 4 values below:
+
+                     0 : Not-ECT
+                     1 : ECT(1)
+                     2 : ECT(0)
+                     3 : CE
+
+                     Example:  -e  3 or -e 0x03 (to indicate congestion to the
+                     end hosts)
+
+                     For more information on ECN field, see RFC 3168.
+
+              -f flow_label
+                     Flow label in integer value between 0 to 1048575 or hexa-
+                     decimal value between 0x00000 to 0xfffff (20-bit).
+                     Example: -f 0
+
+                     Value of 0 is to indicate that the packet does not belong
+                     to any flow. For more information, see RFC 6437.
+
+              -h hop_limit
+                     Hop limit in integer value between 0 to 255.  Destination
+                     host  should not discard a packet with hop limit equal to
+                     0.
+
+              -s sip or oip,nip
+                     Source IP address. Example: -s fd00::1
+                     If oip and nip are specified, any instances of oip in the
+                     source IP address field will be replaced with nip.
+
+              -d dip or oip,nip
+                     Destination IP address. Example: -d fd00::2
+                     If oip and nip are specified, any instances of oip in the
+                     destination IP address field will be replaced with nip.
+
+              Options for icmp (RFC 792):
+
+              -t type
+                     Type of message in integer value between 0 to  255.  Some
+                     common messages are:
+
+                     0  : Echo reply
+                     3  : Destination unreachable
+                     8  : Echo
+                     11 : Time exceeded
+
+                     For the complete list, see:
+                     https://www.iana.org/assignments/icmp-parameters
+
+              -c code
+                     Error  code  for this ICMPv4 message in integer value be-
+                     tween 0 to 255. For example, code for time exceeded  mes-
+                     sage may have one of the following values:
+
+                     0 : transit TTL exceeded
+                     1 : reassembly TTL exceeded
+
+                     For the complete list, see:
+                     https://www.iana.org/assignments/icmp-parameters
+
+              Options for icmp6 (RFC 4443):
+
+              -t type
+                     Type  of  message in integer value between 0 to 255. Some
+                     common messages are:
+
+                     3   : Time Exceeded
+                     128 : Echo Request
+                     129 : Echo Reply
+
+                     For the complete list, see:
+                     https://www.iana.org/assignments/icmpv6-parameters
+
+              -c code
+                     Code for this ICMPv6 message in integer value  between  0
+                     to  255.  For example, code for Time Exceeded message may
+                     have one of the following values:
+
+                     0 : hop limit exceeded in transit
+                     1 : fragment reassembly time exceeded
+
+                     For the complete list, see:
+                     https://www.iana.org/assignments/icmpv6-parameters
+
+              Options for tcp (RFC 9293):
+
+              -s sport or op,np
+                     Source port number in integer value between 0  to  65535.
+                     If  op  and  np are specified, any instances of op in the
+                     source port field will be replaced with np. You can  also
+                     use the string 'rand' for a random port number.
+
+                     Example: -s 2000, -s rand, or -s 1000,rand
+
+              -d dport or op,np
+                     Destination  port  number  in  integer value between 0 to
+                     65535. If op and np are specified, any instances of op in
+                     the  destination port field will be replaced with np. You
+                     can also use the string 'rand' for a random port number.
+
+                     Example: -d 2000, -d rand, or -d 1000,rand
+
+              -q seq or os,ns
+                     Sequence number in integer value between 0 to 4294967295.
+                     If  SYN  control bit is set, e.g. character s is supplied
+                     to the -f flag, seq represents the initial sequence  num-
+                     ber  (ISN)  and the first data byte is ISN + 1. If os and
+                     ns are specified, any instances of  os  in  the  sequence
+                     number  field  will be replaced with ns. You can also use
+                     the string 'rand' for a random sequence number.
+
+                     Example: -q 100000, -q rand, or -q 100000,rand
+
+              -a ack or oa,na
+                     Acknowledgment number  in  integer  value  between  0  to
+                     4294967295.  If  ACK control bit is set, e.g. character a
+                     is supplied to the -f flag, ack represents the  value  of
+                     the  next  sequence number that the receiver is expecting
+                     to receive. If oa and na are specified, any instances  of
+                     oa  in  the  acknowledgment number field will be replaced
+                     with na. You can also use the string 'rand' for a  random
+                     acknowledgment number.
+
+                     Example: -a 100000, -a rand, or -a 100000,rand
+
+              -f flags
+                     Control flags. Possible characters for flags are:
+
+                     - : remove all flags
+                     c : congestion window reduced
+                     e : explicit congestion notification echo
+                     u : urgent pointer field is significant
+                     a : acknowledgment field is significant
+                     p : push function
+                     r : resets the connection
+                     s : synchronizes the sequence numbers
+                     f : no more data from sender
+
+                     Example: -f s
+                     If  any of the flags is specified, all original flags are
+                     removed automatically.
+
+              -w win
+                     Window size in integer value between 0 to 65535.  If  ACK
+                     control  bit  is set, e.g. character a is supplied to the
+                     -f flag, win represents the number of data bytes,  begin-
+                     ning  with the one indicated in the acknowledgment number
+                     field that the receiver is willing to accept.
+
+              -u urg
+                     Urgent pointer in integer value between 0  to  65535.  If
+                     URG  control  bit is set, e.g. character u is supplied to
+                     the -f flag, urg represents a pointer that points to  the
+                     first data byte following the urgent data.
+
+              Options for udp (RFC 768):
+
+              -s sport or op,np
+                     Source  port  number in integer value between 0 to 65535.
+                     If op and np are specified, any instances of  op  in  the
+                     source  port field will be replaced with np. You can also
+                     use the string 'rand' for a random port number.
+
+                     Example: -s 2000, -s rand, or -s 1000,rand
+
+              -d dport or op,np
+                     Destination port number in integer  value  between  0  to
+                     65535. If op and np are specified, any instances of op in
+                     the destination port field will be replaced with np.  You
+                     can also use the string 'rand' for a random port number.
+
+                     Example: -d 2000, -d rand, or -d 1000,rand
+
+SEE ALSO
+       bittwist(1), pcap(3), tcpdump(1)
+
+BUGS
+       File your bug report and send to:
+
+              Addy Yeow Chin Heng &lt;ayeowch@gmail.com&gt;
+
+       Make  sure  you  are  using the latest stable version before submitting
+       your bug report.
+
+COPYRIGHT
+       Copyright (C) 2006 - 2023 Addy Yeow Chin Heng &lt;ayeowch@gmail.com&gt;
+
+       This program is free software; you can redistribute it and/or modify it
+       under  the  terms of the GNU General Public License as published by the
+       Free Software Foundation; either version 2 of the License, or (at  your
+       option) any later version.
+
+       This  program  is  distributed  in the hope that it will be useful, but
+       WITHOUT ANY  WARRANTY;  without  even  the  implied  warranty  of  MER-
+       CHANTABILITY  or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+       Public License for more details.
+
+       You should have received a copy of the GNU General Public License along
+       with this program; if not, write to the Free Software Foundation, Inc.,
+       51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+AUTHORS
+       Original author and current maintainer:
+
+              Addy Yeow Chin Heng
+
+       The current version is available from https://bittwist.sourceforge.io
+
+
+
+                                 16 June 2023                     BITTWISTE(1)
+</pre>
+</body>
+</html>

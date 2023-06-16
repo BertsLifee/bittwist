@@ -1,0 +1,11 @@
+.pytest_cache
+__pycache__
+bittwist
+bittwist-bsd-*
+bittwist-linux-*
+bittwist-macos-*
+bittwist-windows-*
+bittwiste
+out.pcap
+release
+snippet.c

@@ -1,0 +1,29 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "bittwist",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "bittwist"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "bittwiste",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "bittwiste"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
