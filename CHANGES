@@ -1,3 +1,14 @@
+17/06/2023: Version 3.6
+- added github repo for source code browsing:
+  https://github.com/ayeowch/bittwist
+bittwist (generator)
+- fixed linerate throttling
+- updated -p option to send packets at set packets per second (pps)
+- added -t option to set inter-packet delay (this was previously -p option)
+bittwiste (editor)
+- added option to edit IPv6 next header
+- added random number support for id, ttl, proto, next header, hop limit
+
 16/06/2023: Version 3.5
 bittwiste (editor)
 - added option to set uniformly distributed random number (mersenne twister)

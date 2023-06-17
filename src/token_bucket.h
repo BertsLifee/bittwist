@@ -37,8 +37,9 @@ int main()
     int i = 1;
     do
     {
-        if (token_bucket_remove(&tb, packet_size, bps))
-            i++; // packet sent
+        while (!token_bucket_remove(&tb, packet_size, bps))
+            usleep(1);
+        i++; // packet sent
     } while (i <= packets);
     return 0;
 }

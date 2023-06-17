@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\"
-.TH BITTWISTE 1 "16 June 2023"
+.TH BITTWISTE 1 "17 June 2023"
 .SH NAME
 .B bittwiste
 \-- pcap capture file editor
@@ -259,9 +259,10 @@ Example: \fB-e\fP 3 or \fB-e\fP 0x03 (to indicate congestion to the end hosts)
 .IP
 For more information on ECN field, see RFC 3168.
 .TP
-.B \-i \fIid\fP
-.br
-Identification in integer value between 0 to 65535.
+.B \-i \fIid\fP or \fIoi\fP,\fIni\fP
+Identification in integer value between 0 to 65535. If \fIoi\fP and \fIni\fP are specified, any instances of \fIoi\fP in the identification field will be replaced with \fIni\fP. You can also use the string 'rand' for a random identification.
+.IP
+Example: \fB-i\fP 2000, \fB-i\fP rand, or \fB-i\fP 1000,rand
 .TP
 .B \-f \fIflags\fP
 Control flags. Possible characters for \fIflags\fP are:
@@ -281,18 +282,19 @@ If any of the flags is specified, all original flags are removed automatically.
 .B \-o \fIoffset\fP
 Fragment offset in integer value between 0 to 7770. Value for \fIoffset\fP represents the number of 64-bit segments contained in earlier fragments which must not exceed 7770 (62160 bytes).
 .TP
-.B \-t \fIttl\fP
-.br
-Time to live in integer value between 0 to 255 (milliseconds).
-.TP
-.B \-p \fIproto\fP
-Protocol number in integer value between 0 to 255. Some common protocol numbers are:
+.B \-t \fIttl\fP or \fIot\fP,\fInt\fP
+Time to live in integer value between 0 to 255 (milliseconds). If \fIot\fP and \fInt\fP are specified, any instances of \fIot\fP in the time to live field will be replaced with \fInt\fP. You can also use the string 'rand' for a random time to live.
 .IP
-\fB1\fP  : Internet Control Message Protocol (ICMPv4)
+Example: \fB-t\fP 64, \fB-i\fP rand, or \fB-i\fP 64,rand
+.TP
+.B \-p \fIproto\fP or \fIop\fP,\fInp\fP
+Protocol number in integer value between 0 to 255. If \fIop\fP and \fInp\fP are specified, any instances of \fIop\fP in the protocol number field will be replaced with \fInp\fP. You can also use the string 'rand' for a random protocol number. Some common protocol numbers are:
+.IP
+\fB1\fP  : Internet Control Message (ICMP)
 .br
-\fB6\fP  : Transmission Control Protocol (TCP)
+\fB6\fP  : Transmission Control (TCP)
 .br
-\fB17\fP : User Datagram Protocol (UDP)
+\fB17\fP : User Datagram (UDP)
 .IP
 For the complete list, see:
 .br
@@ -358,9 +360,29 @@ Example: \fB-f\fP 0
 .IP
 Value of 0 is to indicate that the packet does not belong to any flow. For more information, see RFC 6437.
 .TP
-.B \-h \fIhop_limit\fP
+.B \-n \fInext_header\fP or \fIon\fP,\fInn\fP
 .br
-Hop limit in integer value between 0 to 255. Destination host should not discard a packet with hop limit equal to 0.
+Next header number in integer value between 0 to 255. If \fIon\fP and \fInn\fP are specified, any instances of \fIon\fP in the next header field will be replaced with \fInn\fP. You can also use the string 'rand' for a random next header number. Example of next header numbers:
+.IP
+\fB0\fP  : IPv6 Hop-by-Hop Option (HOPOPT)
+.br
+\fB6\fP  : Transmission Control (TCP)
+.br
+\fB17\fP : User Datagram (UDP)
+.br
+\fB50\fP : Encap Security Payload (ESP)
+.br
+\fB51\fP : Authentication Header (AH)
+.br
+\fB58\fP : ICMP for IPv6 (IPv6-ICMP)
+.IP
+For the complete list, see:
+.br
+\fIhttps://www.iana.org/assignments/protocol-numbers\fP
+.TP
+.B \-h \fIhop_limit\fP or \fIoh\fP,\fInh\fP
+.br
+Hop limit in integer value between 0 to 255. If \fIoh\fP and \fInh\fP are specified, any instances of \fIoh\fP in the hop limit field will be replaced with \fInh\fP. You can also use the string 'rand' for a random hop limit. Destination host should not discard a packet with hop limit equal to 0.
 .TP
 .B \-s \fIsip\fP or \fIoip\fP,\fInip\fP
 .br
@@ -430,12 +452,12 @@ For the complete list, see:
 .TP
 Options for \fBtcp\fP (RFC 9293):
 .TP
-.B \-s\fP \fIsport\fP or \fIop\fP,\fInp\fP
+.B \-s \fIsport\fP or \fIop\fP,\fInp\fP
 Source port number in integer value between 0 to 65535. If \fIop\fP and \fInp\fP are specified, any instances of \fIop\fP in the source port field will be replaced with \fInp\fP. You can also use the string 'rand' for a random port number.
 .IP
 Example: \fB-s\fP 2000, \fB-s\fP rand, or \fB-s\fP 1000,rand
 .TP
-.B \-d\fP \fIdport\fP or \fIop\fP,\fInp\fP
+.B \-d \fIdport\fP or \fIop\fP,\fInp\fP
 Destination port number in integer value between 0 to 65535. If \fIop\fP and \fInp\fP are specified, any instances of \fIop\fP in the destination port field will be replaced with \fInp\fP. You can also use the string 'rand' for a random port number.
 .IP
 Example: \fB-d\fP 2000, \fB-d\fP rand, or \fB-d\fP 1000,rand
@@ -487,12 +509,12 @@ Urgent pointer in integer value between 0 to 65535. If URG control bit is set, e
 .TP
 Options for \fBudp\fP (RFC 768):
 .TP
-.B \-s\fP \fIsport\fP or \fIop\fP,\fInp\fP
+.B \-s \fIsport\fP or \fIop\fP,\fInp\fP
 Source port number in integer value between 0 to 65535. If \fIop\fP and \fInp\fP are specified, any instances of \fIop\fP in the source port field will be replaced with \fInp\fP. You can also use the string 'rand' for a random port number.
 .IP
 Example: \fB-s\fP 2000, \fB-s\fP rand, or \fB-s\fP 1000,rand
 .TP
-.B \-d\fP \fIdport\fP or \fIop\fP,\fInp\fP
+.B \-d \fIdport\fP or \fIop\fP,\fInp\fP
 Destination port number in integer value between 0 to 65535. If \fIop\fP and \fInp\fP are specified, any instances of \fIop\fP in the destination port field will be replaced with \fInp\fP. You can also use the string 'rand' for a random port number.
 .IP
 Example: \fB-d\fP 2000, \fB-d\fP rand, or \fB-d\fP 1000,rand

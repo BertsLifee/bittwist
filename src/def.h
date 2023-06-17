@@ -62,7 +62,7 @@ struct pcap_sf_pkthdr
     bpf_u_int32 len;        /* length this packet (off wire) */
 };
 
-#define BITTWIST_VERSION "3.5"
+#define BITTWIST_VERSION "3.6"
 #define BITTWISTE_VERSION BITTWIST_VERSION
 
 #define ETHER_ADDR_LEN 6   /* Ethernet address length */
@@ -101,7 +101,8 @@ struct pcap_sf_pkthdr
 #define LINERATE_MIN 0     /* Mbps (0 means no limit) */
 #define LINERATE_MAX 10000 /* Mbps */
 #define PKT_PAD 0x00       /* packet padding */
-#define SLEEP_MAX 86400    /* arbitrary maximum interval in seconds */
+#define PPS_MAX 1000000    /* max. packets per second */
+#define INTERVAL_MAX 86400 /* arbitrary maximum interval between packets in seconds */
 
 /* bittwiste */
 #define FIELD_SET 1          /* flag to overwrite field with new value */
@@ -371,7 +372,8 @@ struct ipopt
     uint8_t ip_ds_field_flag;
     uint8_t ip_ecn_field; /* 2-bit ECN field (last 2-bit of 8-bit type of service field) */
     uint8_t ip_ecn_field_flag;
-    uint16_t ip_id; /* identification */
+    uint16_t ip_old_id; /* identification */
+    uint16_t ip_new_id;
     uint8_t ip_id_flag;
     uint8_t ip_flag_r; /* reserved bit */
     uint8_t ip_flag_d; /* don't fragment bit */
@@ -379,9 +381,11 @@ struct ipopt
     uint8_t ip_flags_flag;
     uint16_t ip_fo; /* fragment offset in bytes */
     uint8_t ip_fo_flag;
-    uint8_t ip_ttl; /* time to live */
+    uint8_t ip_old_ttl; /* time to live */
+    uint8_t ip_new_ttl;
     uint8_t ip_ttl_flag;
-    uint8_t ip_p; /* protocol */
+    uint8_t ip_old_p; /* protocol */
+    uint8_t ip_new_p;
     uint8_t ip_p_flag;
     struct in_addr ip_old_src; /* source address */
     struct in_addr ip_new_src;
@@ -399,7 +403,11 @@ struct ip6opt
     uint8_t ip6_ecn_field_flag;
     uint32_t ip6_flow_label; /* 20-bit flow label */
     uint8_t ip6_flow_label_flag;
-    uint8_t ip6_hop_limit; /* 8-bit hop limit */
+    uint8_t ip6_old_next_header; /* 8-bit next header */
+    uint8_t ip6_new_next_header;
+    uint8_t ip6_next_header_flag;
+    uint8_t ip6_old_hop_limit; /* 8-bit hop limit */
+    uint8_t ip6_new_hop_limit;
     uint8_t ip6_hop_limit_flag;
     struct in6_addr ip6_old_src; /* 128-bit source address */
     struct in6_addr ip6_new_src;

@@ -32,10 +32,7 @@ void token_bucket_add(struct token_bucket *tb, uint64_t bps)
 bool token_bucket_remove(struct token_bucket *tb, uint64_t bits, uint64_t bps)
 {
     if (tb->tokens < bits)
-    {
-        usleep(1);
         token_bucket_add(tb, bps);
-    }
 
     if (tb->tokens < bits)
         return false;

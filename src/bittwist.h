@@ -25,7 +25,7 @@
 #include "def.h"
 
 void send_packets(char *device, FILE *fp, char *trace_file);
-void throttle(int pkt_len);
+void throttle(int bits);
 void load_packet(FILE *fp, int pkt_len, struct pcap_sf_pkthdr *header, char *trace_file);
 void info(void);
 void cleanup(int signum);

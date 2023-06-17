@@ -32,7 +32,8 @@ char ebuf[PCAP_ERRBUF_SIZE]; /* pcap error buffer */
 int vflag = 0;              /* 1 - print timestamp, 2 - print timestamp and hex data */
 int len = 0;                /* packet length to send (-1 = captured, 0 = on wire, or positive
                                value <= 1514) */
-int interval = 0;           /* a constant interval in seconds (0 means actual interval
+int pps = 0;                /* packets per second */
+int interval = 0;           /* interval between packets in seconds (0 means actual interval
                                will be used instead) */
 int linerate = -1;          /* limit packet throughput at the specified Mbps (0 means no limit) */
 uint64_t bps = 0;           /* bits per second converted from linerate */
@@ -43,10 +44,11 @@ pcap_t *pd = NULL;         /* pcap descriptor */
 uint8_t *pkt_data = NULL;  /* packet data including the link-layer header */
 FILE **trace_files = NULL; /* pointers to trace files */
 int trace_files_count = 0;
-struct timespec sleep_ts = {0, 0}; /* sleep duration to shape throughput */
-struct timespec curr_ts;           /* timestamp of current packet */
-struct timespec prev_ts = {0, 0};  /* timestamp of previous packet */
-struct token_bucket tb = {0, 0};   /* token bucket for shaping throughput at linerate */
+struct timespec sleep_ts = {0, 0};        /* sleep duration to shape throughput */
+struct timespec curr_ts;                  /* timestamp of current packet */
+struct timespec prev_ts = {0, 0};         /* timestamp of previous packet */
+struct token_bucket tb_pps = {0, 0};      /* token bucket for shaping throughput at pps */
+struct token_bucket tb_linerate = {0, 0}; /* token bucket for shaping throughput at linerate */
 
 /* stats */
 static unsigned long pkts_sent = 0;
@@ -72,7 +74,7 @@ int main(int argc, char **argv)
         program_name = argv[0];
 
     /* process options */
-    while ((c = getopt(argc, argv, "dvi:s:l:c:p:r:h")) != -1)
+    while ((c = getopt(argc, argv, "dvi:s:l:c:p:t:r:h")) != -1)
     {
         switch (c)
         {
@@ -133,16 +135,22 @@ int main(int argc, char **argv)
             max_pkts = strtoul(optarg, NULL, 0); /* send all packets if max_pkts <= 0 */
             break;
         case 'p':
+            pps = strtol(optarg, NULL, 0);
+            if (pps < 1 || pps > PPS_MAX)
+                error("value for pps must be between 1 to %d", PPS_MAX);
+            tb_pps.last_add = time(NULL);
+            break;
+        case 't':
             interval = strtol(optarg, NULL, 0);
-            if (interval < 1 || interval > SLEEP_MAX)
-                error("value for sleep must be between 1 to %d", SLEEP_MAX);
+            if (interval < 1 || interval > INTERVAL_MAX)
+                error("value for interval must be between 1 to %d", INTERVAL_MAX);
             break;
         case 'r':
             linerate = strtol(optarg, NULL, 0);
             if (linerate < LINERATE_MIN || linerate > LINERATE_MAX)
                 error("value for rate must be between %d to %d", LINERATE_MIN, LINERATE_MAX);
             bps = (uint64_t)linerate * 1000000;
-            tb.last_add = time(NULL);
+            tb_linerate.last_add = time(NULL);
             break;
         case 'h':
         default:
@@ -181,9 +189,6 @@ int main(int argc, char **argv)
     /* set signal handler for SIGINT (Control-C) */
     (void)signal(SIGINT, cleanup);
 
-    if (gettimeofday(&start, NULL) == -1)
-        notice("gettimeofday(): %s", strerror(errno));
-
     trace_files = malloc((argc - optind) * sizeof(FILE *));
     for (i = optind; i < argc; i++)
     {
@@ -193,6 +198,9 @@ int main(int argc, char **argv)
             error("fopen(): error reading %s", argv[i]);
         trace_files[trace_files_count++] = fp;
     }
+
+    if (gettimeofday(&start, NULL) == -1)
+        notice("gettimeofday(): %s", strerror(errno));
 
     /* send infinitely if loop <= 0 until user Control-C */
     while (1)
@@ -262,7 +270,7 @@ void send_packets(char *device, FILE *fp, char *trace_file)
         else /* user specified length */
             pkt_len = len;
 
-        throttle(pkt_len);
+        throttle(pkt_len * 8);
 
         load_packet(fp, pkt_len, &header, trace_file);
 
@@ -308,7 +316,7 @@ void send_packets(char *device, FILE *fp, char *trace_file)
     } /* end while */
 }
 
-void throttle(int pkt_len)
+void throttle(int bits)
 {
     /*
      * always send first packet immediately.
@@ -329,15 +337,21 @@ void throttle(int pkt_len)
             timespecsub(&curr_ts, &prev_ts, &sleep_ts);
     }
 
-    if (bps)
+    if (pps)
+    {
+        /* throttle using token bucket algorithm if pps is specified */
+        while (!token_bucket_remove(&tb_pps, 1, pps))
+            usleep(1);
+    }
+    else if (bps)
     {
         /* throttle using token bucket algorithm if linerate is specified */
-        if (token_bucket_remove(&tb, pkt_len * 8, bps))
-            return;
+        while (!token_bucket_remove(&tb_linerate, bits, bps))
+            usleep(1);
     }
     else if (timespecisset(&sleep_ts))
     {
-        if (sleep_ts.tv_sec > SLEEP_MAX)
+        if (sleep_ts.tv_sec > INTERVAL_MAX)
             notice("warning: next packet has timestamp over %lu seconds away", sleep_ts.tv_sec);
         if (nanosleep(&sleep_ts, NULL) == -1)
             notice("nanosleep(): %s", strerror(errno));
@@ -367,7 +381,7 @@ void info(void)
 {
     struct timeval elapsed;
     float seconds;
-    unsigned long bits_sent;
+    unsigned long bits_sent, actual_pps;
     float mbps, gbps;
 
     if (gettimeofday(&end, NULL) == -1)
@@ -375,13 +389,14 @@ void info(void)
     timersub(&end, &start, &elapsed);
     seconds = elapsed.tv_sec + (float)elapsed.tv_usec / 1000000;
 
+    actual_pps = pkts_sent / seconds;
     bits_sent = bytes_sent * 8;
     mbps = bits_sent / seconds / 1000000;
     gbps = bits_sent / seconds / 1000000000;
 
     (void)putchar('\n');
-    notice("%lu packets (%lu bytes) sent", pkts_sent, bytes_sent);
-    notice("throughput = %.4f Mbps (%.4f Gbps)", mbps, gbps);
+    notice("sent = %lu packets, %lu bits, %lu bytes", pkts_sent, bits_sent, bytes_sent);
+    notice("throughput = %lu pps, %.4f Mbps, %.4f Gbps", actual_pps, mbps, gbps);
     if (failed)
         notice("%lu write attempts failed", failed);
     notice("elapsed time = %f seconds", seconds);
@@ -531,24 +546,26 @@ void usage(void)
                   "%s version %s\n"
                   "%s\n"
                   "Usage: %s [-d] [-v] [-i interface] [-s length] [-l loop] [-c count]\n"
-                  "                [-p sleep] [-r rate] [-h] pcap-file(s)\n"
+                  "                [-p pps] [-t interval] [-r rate] [-h] pcap-file(s)\n"
                   "\nOptions:\n"
                   " -d             Print a list of network interfaces available.\n"
                   " -v             Print timestamp for each packet.\n"
                   " -vv            Print timestamp and hex data for each packet.\n"
                   " -i interface   Send 'pcap-file(s)' out onto the network through 'interface'.\n"
                   " -s length      Packet length to send (in bytes). Set 'length' to:\n"
-                  "                     0 to send the actual packet length. This is the default.\n"
-                  "                    -1 to send the captured length.\n"
+                  "                 0 : Send the actual packet length. This is the default.\n"
+                  "                -1 : Send the captured length.\n"
                   "                or any other value from %d to %d.\n"
                   " -l loop        Send 'pcap-file(s)' out onto the network for 'loop' times.\n"
                   "                Set 'loop' to 0 to send 'pcap-file(s)' until stopped.\n"
                   "                To stop, type Control-C.\n"
                   " -c count       Send up to 'count' packets.\n"
                   "                Default is to send all packets from 'pcap-file(s)'.\n"
-                  " -p sleep       Set interval to 'sleep' (in seconds), ignoring the actual\n"
-                  "                interval.\n"
-                  "                Value for 'sleep' must be between 1 to %d.\n"
+                  " -p pps         Send 'pps' packets per second.\n"
+                  "                Value for 'pps' must be between 1 to %d.\n"
+                  " -t interval    Set inter-packet delay to 'interval' in seconds, ignoring the\n"
+                  "                actual interval between packets in 'pcap-file(s)'.\n"
+                  "                Value for 'interval' must be between 1 to %d.\n"
                   " -r rate        Limit the sending to 'rate' Mbps.\n"
                   "                Value for 'rate' must be between %d to %d.\n"
                   "                This flag is intended to set the desired packet throughput.\n"
@@ -558,6 +575,6 @@ void usage(void)
                   "                'pcap-file(s)' until stopped.\n"
                   " -h             Print version information and usage.\n",
                   program_name, BITTWIST_VERSION, pcap_lib_version(), program_name, ETHER_HDR_LEN,
-                  ETHER_MAX_LEN, SLEEP_MAX, LINERATE_MIN, LINERATE_MAX);
+                  ETHER_MAX_LEN, PPS_MAX, INTERVAL_MAX, LINERATE_MIN, LINERATE_MAX);
     exit(EXIT_SUCCESS);
 }

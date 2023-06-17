@@ -281,15 +281,24 @@ void set_number_options(char *optarg, void *val_a, void *val_b, uint8_t *flag, s
         uint64_t v = strtoul(cp, NULL, 0);
 
         /*
+         * accept sizeof(uint8_t) for e.g. protocol number
          * accept sizeof(uint16_t) for e.g. tcp port number
          * accept sizeof(uint32_t) for e.g. tcp sequence number
          */
-        uint32_t max_val = (val_size == sizeof(uint16_t)) ? UINT16_MAX : UINT32_MAX;
+        uint32_t max_val;
+        if (val_size == sizeof(uint8_t))
+            max_val = UINT8_MAX;
+        else if (val_size == sizeof(uint16_t))
+            max_val = UINT16_MAX;
+        else
+            max_val = UINT32_MAX;
 
         if (v < 0 || v > max_val)
             error("number is out of range: %lu", v);
 
-        if (val_size == sizeof(uint16_t))
+        if (val_size == sizeof(uint8_t))
+            *((uint8_t *)val_a) = (uint8_t)v;
+        else if (val_size == sizeof(uint16_t))
             *((uint16_t *)val_a) = (uint16_t)v;
         else
             *((uint32_t *)val_a) = (uint32_t)v;
@@ -305,7 +314,9 @@ void set_number_options(char *optarg, void *val_a, void *val_b, uint8_t *flag, s
             if (v < 0 || v > max_val)
                 error("number is out of range: %lu", v);
 
-            if (val_size == sizeof(uint16_t))
+            if (val_size == sizeof(uint8_t))
+                *((uint8_t *)val_b) = (uint8_t)v;
+            else if (val_size == sizeof(uint16_t))
                 *((uint16_t *)val_b) = (uint16_t)v;
             else
                 *((uint32_t *)val_b) = (uint32_t)v;
@@ -519,11 +530,8 @@ void parse_header_options(int argc, char **argv)
                 ipopt->ip_ecn_field_flag = 1;
                 break;
             case 'i': /* identification */
-                v = strtol(optarg, NULL, 0);
-                if (v < 0 || v > USHRT_MAX)
-                    error("IP identification is out of range");
-                ipopt->ip_id = (uint16_t)v;
-                ipopt->ip_id_flag = 1;
+                set_number_options(optarg, &ipopt->ip_old_id, &ipopt->ip_new_id, &ipopt->ip_id_flag,
+                                   sizeof(uint16_t));
                 break;
             case 'f': /* flags */
                 for (c = 0; optarg[c]; c++)
@@ -550,18 +558,12 @@ void parse_header_options(int argc, char **argv)
                 ipopt->ip_fo_flag = 1;
                 break;
             case 't': /* time to live */
-                v = strtol(optarg, NULL, 0);
-                if (v < 0 || v > UCHAR_MAX)
-                    error("IP time to live is out of range");
-                ipopt->ip_ttl = (uint8_t)v;
-                ipopt->ip_ttl_flag = 1;
+                set_number_options(optarg, &ipopt->ip_old_ttl, &ipopt->ip_new_ttl,
+                                   &ipopt->ip_ttl_flag, sizeof(uint8_t));
                 break;
             case 'p': /* protocol */
-                v = strtol(optarg, NULL, 0);
-                if (v < 0 || v > UCHAR_MAX)
-                    error("IP protocol is out of range");
-                ipopt->ip_p = (uint8_t)v;
-                ipopt->ip_p_flag = 1;
+                set_number_options(optarg, &ipopt->ip_old_p, &ipopt->ip_new_p, &ipopt->ip_p_flag,
+                                   sizeof(uint8_t));
                 break;
             case 's': /* source IP */
                 str = strdup(optarg);
@@ -613,7 +615,7 @@ void parse_header_options(int argc, char **argv)
         if (ip6opt == NULL)
             error("malloc(): cannot allocate memory for ip6opt");
         memset(ip6opt, 0, sizeof(struct ip6opt));
-        while ((c = getopt(argc, argv, "c:e:f:h:s:d:")) != -1)
+        while ((c = getopt(argc, argv, "c:e:f:n:h:s:d:")) != -1)
         {
             switch (c)
             {
@@ -638,12 +640,14 @@ void parse_header_options(int argc, char **argv)
                 ip6opt->ip6_flow_label = (uint32_t)v;
                 ip6opt->ip6_flow_label_flag = 1;
                 break;
+            case 'n': /* 8-bit next header */
+                set_number_options(optarg, &ip6opt->ip6_old_next_header,
+                                   &ip6opt->ip6_new_next_header, &ip6opt->ip6_next_header_flag,
+                                   sizeof(uint8_t));
+                break;
             case 'h': /* 8-bit hop limit */
-                v = strtol(optarg, NULL, 0);
-                if (v < 0 || v > UCHAR_MAX)
-                    error("IPv6 hop limit is out of range");
-                ip6opt->ip6_hop_limit = (uint8_t)v;
-                ip6opt->ip6_hop_limit_flag = 1;
+                set_number_options(optarg, &ip6opt->ip6_old_hop_limit, &ip6opt->ip6_new_hop_limit,
+                                   &ip6opt->ip6_hop_limit_flag, sizeof(uint8_t));
                 break;
             case 's': /* source IP */
                 str = strdup(optarg);
@@ -1622,8 +1626,13 @@ void update_ip_hdr(struct ip *ip_hdr, uint8_t *r, uint8_t *d, uint8_t *m)
         ip_hdr->ip_tos |= ipopt->ip_ecn_field;
 
     /* overwrite identification */
-    if (ipopt->ip_id_flag)
-        ip_hdr->ip_id = htons(ipopt->ip_id);
+    if (ipopt->ip_id_flag == FIELD_SET)
+        ip_hdr->ip_id = htons(ipopt->ip_old_id);
+    else if (ipopt->ip_id_flag == FIELD_REPLACE && ip_hdr->ip_id == htons(ipopt->ip_old_id))
+        ip_hdr->ip_id = htons(ipopt->ip_new_id);
+    else if (ipopt->ip_id_flag == FIELD_SET_RAND ||
+             (ipopt->ip_id_flag == FIELD_REPLACE_RAND && ip_hdr->ip_id == htons(ipopt->ip_old_id)))
+        ip_hdr->ip_id = htons(get_random_number(UINT16_MAX));
 
     /* original fragment offset */
     ip_fo = ntohs(ip_hdr->ip_off) & IP_OFFMASK;
@@ -1648,12 +1657,22 @@ void update_ip_hdr(struct ip *ip_hdr, uint8_t *r, uint8_t *d, uint8_t *m)
     }
 
     /* overwrite time to live */
-    if (ipopt->ip_ttl_flag)
-        ip_hdr->ip_ttl = ipopt->ip_ttl;
+    if (ipopt->ip_ttl_flag == FIELD_SET)
+        ip_hdr->ip_ttl = ipopt->ip_old_ttl;
+    else if (ipopt->ip_ttl_flag == FIELD_REPLACE && ip_hdr->ip_ttl == ipopt->ip_old_ttl)
+        ip_hdr->ip_ttl = ipopt->ip_new_ttl;
+    else if (ipopt->ip_ttl_flag == FIELD_SET_RAND ||
+             (ipopt->ip_ttl_flag == FIELD_REPLACE_RAND && ip_hdr->ip_ttl == ipopt->ip_old_ttl))
+        ip_hdr->ip_ttl = get_random_number(UINT8_MAX);
 
     /* overwrite protocol */
-    if (ipopt->ip_p_flag)
-        ip_hdr->ip_p = ipopt->ip_p;
+    if (ipopt->ip_p_flag == FIELD_SET)
+        ip_hdr->ip_p = ipopt->ip_old_p;
+    else if (ipopt->ip_p_flag == FIELD_REPLACE && ip_hdr->ip_p == htons(ipopt->ip_old_p))
+        ip_hdr->ip_p = ipopt->ip_new_p;
+    else if (ipopt->ip_p_flag == FIELD_SET_RAND ||
+             (ipopt->ip_p_flag == FIELD_REPLACE_RAND && ip_hdr->ip_p == ipopt->ip_old_p))
+        ip_hdr->ip_p = get_random_number(UINT8_MAX);
 
     /* overwrite source IP */
     if (ipopt->ip_src_flag == 1) /* overwrite all source IP */
@@ -1822,9 +1841,27 @@ void update_ip6_hdr(struct ip6 *ip6_hdr)
                             (htonl(ip6opt->ip6_flow_label) & IP6_FLOWLABEL_MASK);
     }
 
+    /* overwrite next header */
+    if (ip6opt->ip6_next_header_flag == FIELD_SET)
+        ip6_hdr->ip6_nxt = ip6opt->ip6_old_next_header;
+    else if (ip6opt->ip6_next_header_flag == FIELD_REPLACE &&
+             ip6_hdr->ip6_nxt == ip6opt->ip6_old_next_header)
+        ip6_hdr->ip6_nxt = ip6opt->ip6_new_next_header;
+    else if (ip6opt->ip6_next_header_flag == FIELD_SET_RAND ||
+             (ip6opt->ip6_next_header_flag == FIELD_REPLACE_RAND &&
+              ip6_hdr->ip6_nxt == ip6opt->ip6_old_next_header))
+        ip6_hdr->ip6_nxt = get_random_number(UINT8_MAX);
+
     /* overwrite hop limit */
-    if (ip6opt->ip6_hop_limit_flag)
-        ip6_hdr->ip6_hlim = ip6opt->ip6_hop_limit;
+    if (ip6opt->ip6_hop_limit_flag == FIELD_SET)
+        ip6_hdr->ip6_hlim = ip6opt->ip6_old_hop_limit;
+    else if (ip6opt->ip6_hop_limit_flag == FIELD_REPLACE &&
+             ip6_hdr->ip6_hlim == ip6opt->ip6_old_hop_limit)
+        ip6_hdr->ip6_hlim = ip6opt->ip6_new_hop_limit;
+    else if (ip6opt->ip6_hop_limit_flag == FIELD_SET_RAND ||
+             (ip6opt->ip6_hop_limit_flag == FIELD_REPLACE_RAND &&
+              ip6_hdr->ip6_hlim == ip6opt->ip6_old_hop_limit))
+        ip6_hdr->ip6_hlim = get_random_number(UINT8_MAX);
 
     /* overwrite source IP */
     if (ip6opt->ip6_src_flag == 1) /* overwrite all source IP */

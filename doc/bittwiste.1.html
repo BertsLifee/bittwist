@@ -228,8 +228,13 @@ OPTIONS
 
                      For more information on ECN field, see RFC 3168.
 
-              -i id
-                     Identification in integer value between 0 to 65535.
+              -i id or oi,ni
+                     Identification in integer value between 0 to 65535. If oi
+                     and  ni are specified, any instances of oi in the identi-
+                     fication field will be replaced with ni. You can also use
+                     the string 'rand' for a random identification.
+
+                     Example: -i 2000, -i rand, or -i 1000,rand
 
               -f flags
                      Control flags. Possible characters for flags are:
@@ -240,26 +245,33 @@ OPTIONS
                      m : set the more fragment flag
 
                      Example: -f d
-                     If any of the flags is specified, all original flags  are
+                     If  any of the flags is specified, all original flags are
                      removed automatically.
 
               -o offset
                      Fragment offset in integer value between 0 to 7770. Value
-                     for offset represents the number of 64-bit segments  con-
-                     tained  in  earlier  fragments which must not exceed 7770
+                     for  offset represents the number of 64-bit segments con-
+                     tained in earlier fragments which must  not  exceed  7770
                      (62160 bytes).
 
-              -t ttl
+              -t ttl or ot,nt
                      Time to live in integer value between 0 to 255 (millisec-
-                     onds).
+                     onds). If ot and nt are specified, any instances of ot in
+                     the  time to live field will be replaced with nt. You can
+                     also use the string 'rand' for a random time to live.
 
-              -p proto
-                     Protocol  number  in integer value between 0 to 255. Some
-                     common protocol numbers are:
+                     Example: -t 64, -i rand, or -i 64,rand
 
-                     1  : Internet Control Message Protocol (ICMPv4)
-                     6  : Transmission Control Protocol (TCP)
-                     17 : User Datagram Protocol (UDP)
+              -p proto or op,np
+                     Protocol number in integer value between 0 to 255. If  op
+                     and np are specified, any instances of op in the protocol
+                     number field will be replaced with np. You can  also  use
+                     the string 'rand' for a random protocol number. Some com-
+                     mon protocol numbers are:
+
+                     1  : Internet Control Message (ICMP)
+                     6  : Transmission Control (TCP)
+                     17 : User Datagram (UDP)
 
                      For the complete list, see:
                      https://www.iana.org/assignments/protocol-numbers
@@ -319,10 +331,29 @@ OPTIONS
                      Value of 0 is to indicate that the packet does not belong
                      to any flow. For more information, see RFC 6437.
 
-              -h hop_limit
-                     Hop limit in integer value between 0 to 255.  Destination
-                     host  should not discard a packet with hop limit equal to
-                     0.
+              -n next_header or on,nn
+                     Next header number in integer value between 0 to 255.  If
+                     on  and nn are specified, any instances of on in the next
+                     header field will be replaced with nn. You can  also  use
+                     the  string 'rand' for a random next header number. Exam-
+                     ple of next header numbers:
+
+                     0  : IPv6 Hop-by-Hop Option (HOPOPT)
+                     6  : Transmission Control (TCP)
+                     17 : User Datagram (UDP)
+                     50 : Encap Security Payload (ESP)
+                     51 : Authentication Header (AH)
+                     58 : ICMP for IPv6 (IPv6-ICMP)
+
+                     For the complete list, see:
+                     https://www.iana.org/assignments/protocol-numbers
+
+              -h hop_limit or oh,nh
+                     Hop limit in integer value between 0 to 255. If oh and nh
+                     are specified, any instances of oh in the hop limit field
+                     will be replaced with nh. You can  also  use  the  string
+                     'rand'  for  a  random hop limit. Destination host should
+                     not discard a packet with hop limit equal to 0.
 
               -s sip or oip,nip
                      Source IP address. Example: -s fd00::1
@@ -509,7 +540,7 @@ AUTHORS
 
 
 
-                                 16 June 2023                     BITTWISTE(1)
+                                 17 June 2023                     BITTWISTE(1)
 </pre>
 </body>
 </html>

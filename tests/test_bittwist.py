@@ -48,10 +48,10 @@ def test_bittwist():
     Quick test to check output of dev bittwist.
     """
     pcap_file = Path(__file__).resolve().parent / "pcap" / "ip.pcap"
-    command = f"sudo {devbin} -vv -i lo {pcap_file} {pcap_file}"
+    command = f"sudo {devbin} -vv -i lo -l 0 -p 100 -c 100 {pcap_file} {pcap_file}"
     output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
     output = output.decode("utf-8")
-    assert "2 packets (68 bytes) sent" in output
+    assert "sent = 100 packets, 27200 bits, 3400 bytes" in output
 
 
 def test_bittwist_rel_vs_dev_hexdump():

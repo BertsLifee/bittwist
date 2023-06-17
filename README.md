@@ -29,8 +29,8 @@ package made available to the open source community.
 
 - Highly portable: Bit-Twist runs on Linux, BSD, macOS, and Windows.
 
-- Send multiple trace files indefinitely with set interval or line rate
-  between 1 Mbps to 10 Gbps using built-in token bucket algorithm.
+- Send multiple trace files indefinitely with set interval, packets per second,
+  or line rate between 1 Mbps to 10 Gbps using built-in token bucket algorithm.
 
 - Comprehensive trace file editor to edit most fields in Ethernet, ARP, IPv4,
   IPv6, ICMPv4, ICMPv6, TCP, and UDP headers. Templates are also included to
@@ -41,8 +41,8 @@ package made available to the open source community.
 - Send packets with custom QoS bits to test classification and queuing features
   of switches and routers.
 
-- Send packets with uniformly distributed random port numbers, TCP sequence
-  numbers, or TCP acknowledgment numbers.
+- Send packets with uniformly distributed random numbers for port numbers,
+  TCP sequence numbers, etc.
 
 - Append custom payload (e.g. copy of hex stream from Wireshark) to existing
   packets after a specific header, handy for testing new protocols.
@@ -88,12 +88,12 @@ This distribution is tested to work on Microsoft Windows 10.
   Select "Install Npcap in WinPcap API-compatible Mode" option during the
   installation.
 
-- Extract bittwist-windows-3.5.zip into C:\Users\_YOUR_USERNAME_\Downloads
+- Extract bittwist-windows-3.6.zip into C:\Users\_YOUR_USERNAME_\Downloads
 
 - In Command Prompt:
 
 ```
-> cd C:\Users\_YOUR_USERNAME_\Downloads\bittwist-windows-3.5\src
+> cd C:\Users\_YOUR_USERNAME_\Downloads\bittwist-windows-3.6\src
 > bittwist -h   (usage for packet generator)
 > bittwiste -h  (usage for packet editor)
 > bittwist -d   (to view available network cards you can send packets on)
@@ -132,7 +132,7 @@ environment:
   terminal under Cygwin environment.
 
 ```
-$ cd /cygdrive/c/Users/_YOUR_USERNAME_/Downloads/bittwist-windows-3.5
+$ cd /cygdrive/c/Users/_YOUR_USERNAME_/Downloads/bittwist-windows-3.6
 $ make
 $ make install
 $ bittwist -h   (usage for packet generator)
@@ -162,8 +162,8 @@ $ sudo ldconfig
 ### Installation
 
 ```
-$ tar -xzf bittwist-linux-3.5.tar.gz
-$ cd bittwist-linux-3.5
+$ tar -xzf bittwist-linux-3.6.tar.gz
+$ cd bittwist-linux-3.6
 $ make
 $ sudo make install
 ```
@@ -184,8 +184,8 @@ This distribution is tested to work on macOS Ventura 13.3.1
 ### Installation
 
 ```
-$ tar -xzf bittwist-macos-3.5.tar.gz
-$ cd bittwist-macos-3.5
+$ tar -xzf bittwist-macos-3.6.tar.gz
+$ cd bittwist-macos-3.6
 $ make
 $ sudo make install
 ```
@@ -203,8 +203,8 @@ This distribution is tested to work on FreeBSD 13.2-RELEASE.
 ### Installation
 
 ```
-$ tar -xzf bittwist-bsd-3.5.tar.gz
-$ cd bittwist-bsd-3.5
+$ tar -xzf bittwist-bsd-3.6.tar.gz
+$ cd bittwist-bsd-3.6
 $ make
 $ sudo make install
 ```

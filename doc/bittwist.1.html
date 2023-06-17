@@ -17,7 +17,7 @@ NAME
 
 SYNOPSIS
        bittwist [ -dvh ] [ -i interface ] [ -s length ] [ -l loop ]
-                [ -c count ] [ -p sleep ] [ -r rate ]
+                [ -c count ] [ -p pps ] [ -t interval ] [ -r rate ]
                 pcap-file(s)
 
 DESCRIPTION
@@ -38,14 +38,14 @@ DESCRIPTION
        its actual length (on-wire) instead of its captured length. If the cap-
        tured length is less than the actual  length,  bittwist  will  pad  the
        packet  with zeros up to its actual length prior to injection. Bittwist
-       will, if not run with the -p or -r flag, inject packets  from  a  trace
-       file based on the captured intervals, in particular, the timestamp dif-
-       ference between two adjacent packets, except for the first packet in  a
-       trace  file, which is always injected immediately. Bittwist is designed
-       to not to interfere with the packet data; it merely read a  packet  and
-       inject  it  as is onto the network. If modification is desired prior to
-       injection of a packet, you can use the bittwiste(1) program, which does
-       just that.
+       will, if not run with the -p, -t, or -r flag,  inject  packets  from  a
+       trace  file  based  on the captured intervals, in particular, the time-
+       stamp difference between two adjacent packets,  except  for  the  first
+       packet  in a trace file, which is always injected immediately. Bittwist
+       is designed to not to interfere with the packet data; it merely read  a
+       packet and inject it as is onto the network. If modification is desired
+       prior to injection of a packet, you can use the  bittwiste(1)  program,
+       which does just that.
 
 OPTIONS
        -d     Print a list of network interfaces available.
@@ -60,8 +60,8 @@ OPTIONS
        -s length
               Packet length to send (in bytes). Set length to:
 
-              0 to send the actual packet length. This is the default.
-              -1 to send the captured length.
+               0 : Send the actual packet length. This is the default.
+              -1 : Send the captured length.
 
               or any other value from 14 to 1514.
 
@@ -74,9 +74,13 @@ OPTIONS
               Send  up  to  count packets. Default is to send all packets from
               pcap-file(s).
 
-       -p sleep
-              Set interval to sleep (in seconds), ignoring the  actual  inter-
-              val. Value for sleep must be between 1 to 86400.
+       -p pps Send pps packets per second. Value for pps must be between 1  to
+              1000000.
+
+       -t interval
+              Set  inter-packet delay to interval in seconds, ignoring the ac-
+              tual interval between packets in pcap-file(s). Value for  inter-
+              val must be between 1 to 86400.
 
        -r rate
               Limit the sending to rate Mbps. Value for rate must be between 0
@@ -135,7 +139,7 @@ AUTHORS
 
 
 
-                                 16 June 2023                      BITTWIST(1)
+                                 17 June 2023                      BITTWIST(1)
 </pre>
 </body>
 </html>
