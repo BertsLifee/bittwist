@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # test_bittwiste.py - bittwiste Linux test suite
-# Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+# Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -205,7 +205,7 @@ def test_bittwiste_timeframe():
     assert out_checksum == "011f483f5bf0a21039dfc345040c696c"
 
 
-def test_bittwiste_nanosecond_ts_pcap():
+def test_bittwiste_nsec_ts_pcap():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "nanosecond-ts.pcap"
     command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -S 08/06/2023,09:09:29-08/06/2023,09:09:29"
     subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
@@ -229,31 +229,82 @@ def test_bittwiste_repeat():
         assert out_checksum == expected_checksum
 
 
+def test_bittwiste_gaprange():
+    ranges = [
+        ("1", "0d088451053fca616c80a131d9559f81"),
+        (f"{2 ** 31 - 1}", "6263c28e0fb912a06a7e55e4045d856f"),
+        ("1000-10000", "5b89572f552e0f9698757f5e0c03fa92"),
+        ("1000", "9567e89a9ce877370f35519bcb3b6c5a"),
+    ]
+    for range, expected_checksum in ranges:
+        command = f"{bin} -I eth -O {out_pcap_file} -P 10000 -N 10 -G {range}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
+
+
+def test_bittwiste_nsec_gaprange():
+    in_pcap_file = Path(__file__).resolve().parent / "pcap" / "nanosecond-ts.pcap"
+    ranges = [
+        ("1", "877575bc86617acb3548edd36cc72ad2"),
+        (f"{2 ** 31 - 1}", "6a2d01e9da3e102d5fa47c8e87c285c0"),
+        ("1000-10000", "4ef4a66489e5efafa70c32e9c198a142"),
+        ("1000", "78d1f93cac85aeca05893f178d08c55d"),
+    ]
+    for range, expected_checksum in ranges:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -G {range}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
+
+
 def test_bittwiste_eth_dst_mac():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "udp.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T eth -d bb:bb:bb:bb:bb:bb,aa:bb:cc:dd:ee:ff"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    macs = [
+        ("aa:bb:cc:dd:ee:ff", "fecc1048a00288d602bf7b84e023e8a2"),
+        ("bb:bb:bb:bb:bb:bb,aa:bb:cc:dd:ee:ff", "fecc1048a00288d602bf7b84e023e8a2"),
+        ("rand", "e9afb8b4268ae1ae6d071447da6c7246"),
+        ("bb:bb:bb:bb:bb:bb,rand", "e9afb8b4268ae1ae6d071447da6c7246"),
+    ]
+    for mac, expected_checksum in macs:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T eth -d {mac}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "fecc1048a00288d602bf7b84e023e8a2"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_eth_src_mac():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "udp.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T eth -s aa:aa:aa:aa:aa:aa,00:11:22:33:44:55"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    macs = [
+        ("00:11:22:33:44:55", "933cb03f4ef0d2b57a1a0bd7763c20ec"),
+        ("aa:aa:aa:aa:aa:aa,00:11:22:33:44:55", "933cb03f4ef0d2b57a1a0bd7763c20ec"),
+        ("rand", "7f97cd336ae2090d26b97aaf988fdcb4"),
+        ("aa:aa:aa:aa:aa:aa,rand", "7f97cd336ae2090d26b97aaf988fdcb4"),
+    ]
+    for mac, expected_checksum in macs:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T eth -s {mac}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "933cb03f4ef0d2b57a1a0bd7763c20ec"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_eth_type():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "udp.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T eth -t ip"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    types = [
+        ("ip", "2bedce3bb211e95b6b2f29978e6605e6"),
+        ("ip6", "13adf4829975c161e903d0adf8712cde"),
+        ("arp", "7cd8fe98e453ea62c8c70733e2eb6f38"),
+    ]
+    for type, expected_checksum in types:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T eth -t {type}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "2bedce3bb211e95b6b2f29978e6605e6"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_arp_opcode():
@@ -267,11 +318,18 @@ def test_bittwiste_arp_opcode():
 
 def test_bittwiste_arp_smac():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "arp.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T arp -s 22:22:22:22:22:22"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    macs = [
+        ("22:22:22:22:22:22", "0538da849487db578c53b1678222f6f1"),
+        ("aa:aa:aa:aa:aa:aa,22:22:22:22:22:22", "0538da849487db578c53b1678222f6f1"),
+        ("rand", "46251c409ad5729f430cad94429d3dc5"),
+        ("aa:aa:aa:aa:aa:aa,rand", "46251c409ad5729f430cad94429d3dc5"),
+    ]
+    for mac, expected_checksum in macs:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T arp -s {mac}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "0538da849487db578c53b1678222f6f1"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_arp_sip():
@@ -285,11 +343,18 @@ def test_bittwiste_arp_sip():
 
 def test_bittwiste_arp_tmac():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "arp.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T arp -t 22:22:22:22:22:22"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    macs = [
+        ("22:22:22:22:22:22", "bc45ddf0a6488d8ba0107ce0f16a7a97"),
+        ("00:00:00:00:00:00,22:22:22:22:22:22", "bc45ddf0a6488d8ba0107ce0f16a7a97"),
+        ("rand", "d67087305a597c4c68b8b3bd2436a4f7"),
+        ("00:00:00:00:00:00,rand", "d67087305a597c4c68b8b3bd2436a4f7"),
+    ]
+    for mac, expected_checksum in macs:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T arp -t {mac}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "bc45ddf0a6488d8ba0107ce0f16a7a97"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_arp_tip():
@@ -449,20 +514,38 @@ def test_bittwiste_ip_proto():
 
 def test_bittwiste_ip_sip():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "ip.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T ip -s 1.1.1.1"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    ips = [
+        ("1.1.1.1", "2f4d5757b9b291930850e5bc5d312081"),
+        ("127.0.0.1,1.1.1.1", "2f4d5757b9b291930850e5bc5d312081"),
+        ("1.1.0.0/16", "72fa1c10e88753417ecca1b3f859da68"),
+        ("127.0.0.1,1.1.0.0/16", "72fa1c10e88753417ecca1b3f859da68"),
+        ("0.0.0.0/0", "870a06f0e16038bc57a28f3b95b3db06"),
+        ("0.0.0.0/32", "151499a5f22cec02c0544f3010c96989"),
+    ]
+    for ip, expected_checksum in ips:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T ip -s {ip}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "2f4d5757b9b291930850e5bc5d312081"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_ip_dip():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "ip.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T ip -d 1.1.1.1"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    ips = [
+        ("1.1.1.1", "19ab454b058b686ff297cabf962d91ad"),
+        ("127.0.0.1,1.1.1.1", "19ab454b058b686ff297cabf962d91ad"),
+        ("1.1.0.0/16", "78e2760d8880e1b0b6a06459d51eba24"),
+        ("127.0.0.1,1.1.0.0/16", "78e2760d8880e1b0b6a06459d51eba24"),
+        ("0.0.0.0/0", "8cb8aec22dc1a7b2e81e20b1fbe4f4de"),
+        ("0.0.0.0/32", "2d48b2186a0dcbf612737e0e0ee49bc4"),
+    ]
+    for ip, expected_checksum in ips:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T ip -d {ip}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "19ab454b058b686ff297cabf962d91ad"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_ip6_ds_field():
@@ -596,20 +679,38 @@ def test_bittwiste_ip6_hop_limit():
 
 def test_bittwiste_ip6_sip():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "tcp6.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T ip6 -s fd00::1"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    ips = [
+        ("fd00::1", "2945d7bf35e49e9d1370f43387b9e74e"),
+        ("2606:4700:4700::64,::1", "4162c7086a1b07c1bcfed847bc561762"),
+        ("2001:db8::/64", "e70dc9a77460bd7da04c43702f283c39"),
+        ("2606:4700:4700::64,2001:db8::/64", "e70dc9a77460bd7da04c43702f283c39"),
+        ("::/0", "2214a6eaf456a8e77bdbd835a8e635ba"),
+        ("::/128", "66414ba3c39e8d41b34dea1822e9da60"),
+    ]
+    for ip, expected_checksum in ips:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T ip6 -s {ip}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "2945d7bf35e49e9d1370f43387b9e74e"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_ip6_dip():
     in_pcap_file = Path(__file__).resolve().parent / "pcap" / "tcp6.pcap"
-    command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -T ip6 -d fd00::2"
-    subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    ips = [
+        ("fd00::2", "a47dd221b2a8a9c20433d80b20a32a97"),
+        ("2606:4700:4700::6400,::2", "7d7996cee18bbcd17cc3541da84b372c"),
+        ("2001:db8::/64", "64b7b89f5b9221cc9f63aae4361b7bf6"),
+        ("2606:4700:4700::6400,2001:db8::/64", "64b7b89f5b9221cc9f63aae4361b7bf6"),
+        ("::/0", "ccd2ee2417f409883229a716b54beaef"),
+        ("::/128", "ed7310991e521868b871d429e3d73932"),
+    ]
+    for ip, expected_checksum in ips:
+        command = f"{bin} -I {in_pcap_file} -O {out_pcap_file} -P 10000 -T ip6 -d {ip}"
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
 
-    out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
-    assert out_checksum == "a47dd221b2a8a9c20433d80b20a32a97"
+        out_checksum = hashlib.md5(open(out_pcap_file, "rb").read()).hexdigest()
+        assert out_checksum == expected_checksum
 
 
 def test_bittwiste_icmp_type():

@@ -1,6 +1,6 @@
 .\"
 .\" bittwiste.1 - manpage for the bittwiste program
-.\" Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+.\" Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\"
-.TH BITTWISTE 1 "17 June 2023"
+.TH BITTWISTE 1 "27 June 2023"
 .SH NAME
 .B bittwiste
 \-- pcap capture file editor
@@ -37,7 +37,7 @@
 ]
 .ti +10
 [
-.B -C
+.B \-C
 ] [
 .B \-M
 .I linktype
@@ -56,14 +56,17 @@
 .B \-N
 .I repeat
 ] [
+.B \-G
+.I gaprange
+] [
 .B \-P
 .I seed
-] [
-.B \-T
-.I header
 ]
 .ti +10
 [
+.B \-T
+.I header
+] [
 .I header-specific-options
 ] [
 .B \-h
@@ -77,7 +80,7 @@ If run with the \fB-X\fP flag, you can append your own payload after any of the 
 .PP
 While parsing the packets in an input trace file, \fIbittwiste\fP will skip, i.e. write to output trace file as is, any truncated packet, for example, an ICMPv4 packet with a captured length of 25 bytes (we need at least 28 bytes; 14 bytes for Ethernet header, minimum 20 bytes for IP header, and 4 bytes for ICMPv4 header) does not give enough information on its ICMPv4 header for \fIbittwiste\fP to read and modify it. In this case, you can utilize the \fB-L\fP and \fB-T\fP flag to copy the original packet up to its IP header and append your customized ICMPv4 header and data to the packet using the \fB-X\fP flag. When specifying payload that covers the ICMPv4, ICMPv6, TCP, or UDP header and its data, you can use zeros, e.g. 0000 for 2 bytes of zeros, for the header checksum which is then corrected automatically by \fIbittwiste\fP.
 .PP
-In order to simplify the way options are specified, you can only edit packets of a specific type supplied to the \fB-T\fP flag per execution of \fIbittwiste\fP on an input trace file. In addition, the \fB-T\fP flag must appear last among the general options which are the \fB-I\fP, \fB-O\fP, \fB-L\fP, \fB-X\fP, \fB-C\fP, \fB-M\fP, \fB-D\fP, \fB-R\fP, \fB-S\fP, \fB-N\fP, and \fB-P\fP flag.
+In order to simplify the way options are specified, you can only edit packets of a specific type supplied to the \fB-T\fP flag per execution of \fIbittwiste\fP on an input trace file. In addition, the \fB-T\fP flag must appear last among the general options which are the \fB-I\fP, \fB-O\fP, \fB-L\fP, \fB-X\fP, \fB-C\fP, \fB-M\fP, \fB-D\fP, \fB-R\fP, \fB-S\fP, \fB-N\fP, \fB-G\fP, and \fB-P\fP flag.
 .SH OPTIONS
 .TP
 .B \-I \fIinput\fP
@@ -158,6 +161,13 @@ Example: \fB-N\fP 100000
 .br
 \fB-N\fP flag is evaluated after \fB-R\fP and \fB-S\fP flag.
 .TP
+.B \-G \fIgaprange\fP
+Apply inter-packet gap between packets in microseconds from 1 to (2^31 - 1). Values in \fIgaprange\fP are inclusive and selected randomly. A single value implies a fixed gap.
+.br
+Example: \fB-G\fP 1000-10000 or \fB-G\fP 1000
+.br
+\fB-G\fP flag is evaluated after \fB-R\fP, \fB-S\fP, and \fB-N\fP flag.
+.TP
 .B \-P \fIseed\fP
 Positive integer to seed the random number generator (RNG) used, for example, to generate random port number. If unset, current timestamp will be used as the RNG seed.
 .IP
@@ -177,15 +187,27 @@ Options for \fBeth\fP (RFC 894):
 .TP
 .B \-d \fIdmac\fP or \fIomac\fP,\fInmac\fP
 .br
-Destination MAC address. Example: \fB-d\fP 00:08:55:64:65:6a
+Destination MAC address. If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the destination MAC address field will be replaced with \fInmac\fP. You can also use the string 'rand' for a random MAC address.
+.IP
+Examples:
 .br
-If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the destination MAC address field will be replaced with \fInmac\fP.
+\fB-d\fP 00:08:55:64:65:6a
+.br
+\fB-d\fP rand
+.br
+\fB-d\fP 00:08:55:64:65:6a,rand
 .TP
 .B \-s \fIsmac\fP or \fIomac\fP,\fInmac\fP
 .br
-Source MAC address. Example: \fB-s\fP 00:13:20:3e:ab:cf
+Source MAC address. If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the source MAC address field will be replaced with \fInmac\fP. You can also use the string 'rand' for a random MAC address.
+.IP
+Examples:
 .br
-If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the source MAC address field will be replaced with \fInmac\fP.
+\fB-s\fP 00:13:20:3e:ab:cf
+.br
+\fB-s\fP rand
+.br
+\fB-s\fP 00:13:20:3e:ab:cf,rand
 .TP
 .B \-t \fItype\fP
 EtherType. Possible keywords for type are, \fBip\fP, \fBip6\fP, and \fBarp\fP only.
@@ -197,9 +219,15 @@ Operation code in integer value between 0 to 65535. For example, you can set \fI
 .TP
 .B \-s \fIsmac\fP or \fIomac\fP,\fInmac\fP
 .br
-Sender MAC address. Example: \fB-s\fP 00:13:20:3e:ab:cf
+Sender MAC address. If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the sender MAC address field will be replaced with \fInmac\fP. You can also use the string 'rand' for a random MAC address.
+.IP
+Examples:
 .br
-If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the sender MAC address field will be replaced with \fInmac\fP.
+\fB-s\fP 00:13:20:3e:ab:cf
+.br
+\fB-s\fP rand
+.br
+\fB-s\fP 00:13:20:3e:ab:cf,rand
 .TP
 .B \-p \fIsip\fP or \fIoip\fP,\fInip\fP
 .br
@@ -209,9 +237,15 @@ If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the send
 .TP
 .B \-t \fItmac\fP or \fIomac\fP,\fInmac\fP
 .br
-Target MAC address. Example: \fB-t\fP 00:08:55:64:65:6a
+Target MAC address. If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the target MAC address field will be replaced with \fInmac\fP. You can also use the string 'rand' for a random MAC address.
+.IP
+Examples:
 .br
-If \fIomac\fP and \fInmac\fP are specified, any instances of \fIomac\fP in the target MAC address field will be replaced with \fInmac\fP.
+\fB-t\fP 00:08:55:64:65:6a
+.br
+\fB-t\fP rand
+.br
+\fB-t\fP 00:08:55:64:65:6a,rand
 .TP
 .B \-q \fItip\fP or \fIoip\fP,\fInip\fP
 .br
@@ -302,15 +336,27 @@ For the complete list, see:
 .TP
 .B \-s \fIsip\fP or \fIoip\fP,\fInip\fP
 .br
-Source IP address. Example: \fB-s\fP 192.168.0.1
+Source IP address. If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the source IP address field will be replaced with \fInip\fP. If CIDR notation (RFC 4632) is specified, e.g. 192.168.0.0/16, an IP address will be selected at random from the range.
+.IP
+Examples:
 .br
-If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the source IP address field will be replaced with \fInip\fP.
+\fB-s\fP 192.168.0.1
+.br
+\fB-s\fP 127.0.0.1,192.168.0.0/16
+.br
+\fB-s\fP 0.0.0.0/0 (random IPv4 throughout the entire range)
 .TP
 .B \-d \fIdip\fP or \fIoip\fP,\fInip\fP
 .br
-Destination IP address. Example: \fB-d\fP 192.168.0.2
+Destination IP address. If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the destination IP address field will be replaced with \fInip\fP. If CIDR notation (RFC 4632) is specified, e.g. 192.168.0.0/16, an IP address will be selected at random from the range.
+.IP
+Examples:
 .br
-If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the destination IP address field will be replaced with \fInip\fP.
+\fB-d\fP 192.168.0.2
+.br
+\fB-d\fP 127.0.0.2,192.168.0.0/16
+.br
+\fB-d\fP 0.0.0.0/0 (random IPv4 throughout the entire range)
 .TP
 Options for \fBip6\fP (RFC 8200):
 .TP
@@ -386,15 +432,27 @@ Hop limit in integer value between 0 to 255. If \fIoh\fP and \fInh\fP are specif
 .TP
 .B \-s \fIsip\fP or \fIoip\fP,\fInip\fP
 .br
-Source IP address. Example: \fB-s\fP fd00::1
+Source IP address. If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the source IP address field will be replaced with \fInip\fP. If CIDR notation (RFC 4291) is specified, e.g. 2001:db8::/64, an IP address will be selected at random from the range.
+.IP
+Examples:
 .br
-If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the source IP address field will be replaced with \fInip\fP.
+\fB-s\fP fd00::1
+.br
+\fB-s\fP ::1,2001:db8::/64
+.br
+\fB-s\fP ::/0 (random IPv6 throughout the entire range)
 .TP
 .B \-d \fIdip\fP or \fIoip\fP,\fInip\fP
 .br
-Destination IP address. Example: \fB-d\fP fd00::2
+Destination IP address. If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the destination IP address field will be replaced with \fInip\fP. If CIDR notation (RFC 4291) is specified, e.g. 2001:db8::/64, an IP address will be selected at random from the range.
+.IP
+Examples:
 .br
-If \fIoip\fP and \fInip\fP are specified, any instances of \fIoip\fP in the destination IP address field will be replaced with \fInip\fP.
+\fB-d\fP fd00::2
+.br
+\fB-d\fP ::2,2001:db8::/64
+.br
+\fB-d\fP ::/0 (random IPv6 throughout the entire range)
 .TP
 Options for \fBicmp\fP (RFC 792):
 .TP
@@ -524,11 +582,15 @@ bittwist(1), pcap(3), tcpdump(1)
 .SH BUGS
 File your bug report and send to:
 .IP
-Addy Yeow Chin Heng <ayeowch@gmail.com>
+Addy Yeow <ayeowch@gmail.com>
 .PP
 Make sure you are using the latest stable version before submitting your bug report.
+.PP
+When running \fIbittwiste\fP with both the \fB-N\fP and \fB-G\fP flags, large inter-packet gap may result in the packet timestamp beyond Unix epoch 2147483647 (2038-01-19 03:14:07 UTC) to overflow. This is due to the use of signed 32-bit integer to store timestamp in \fIpcap\fP(3) header. Simply changing the data type, e.g. using unsigned 64-bit integer, would break the compatibility of the output trace file with existing systems.
+.PP
+The workaround built into \fIbittwiste\fP is to use Unix epoch 946684800 (2020-01-01 00:00:00 UTC) as the starting reference timestamp when \fB-G\fP flag is specified. This translates to a maximum timespan of 38 years or 559165 packets in the output trace file when using the maximum inter-packet gap, i.e. \fB-G\fP 2147483647.
 .SH COPYRIGHT
-Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 .PP
 This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version.
 .PP
@@ -538,6 +600,6 @@ You should have received a copy of the GNU General Public License along with thi
 .SH AUTHORS
 Original author and current maintainer:
 .IP
-Addy Yeow Chin Heng
+Addy Yeow
 .PP
 The current version is available from https://bittwist.sourceforge.io

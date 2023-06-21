@@ -1,6 +1,6 @@
 .\"
 .\" bittwist.1 - manpage for the bittwist program
-.\" Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+.\" Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\"
-.TH BITTWIST 1 "17 June 2023"
+.TH BITTWIST 1 "27 June 2023"
 .SH NAME
 .B bittwist
 \-- pcap based ethernet packet generator
@@ -43,7 +43,7 @@
 .I pps
 ] [
 .B \-t
-.I interval
+.I gap
 ] [
 .B \-r
 .I rate
@@ -86,8 +86,8 @@ Send up to \fIcount\fP packets. Default is to send all packets from \fIpcap-file
 .B \-p \fIpps\fP
 Send \fIpps\fP packets per second. Value for \fIpps\fP must be between 1 to 1000000.
 .TP
-.B \-t \fIinterval\fP
-Set inter-packet delay to \fIinterval\fP in seconds, ignoring the actual interval between packets in \fIpcap-file(s)\fP. Value for \fIinterval\fP must be between 1 to 86400.
+.B \-t \fIgap\fP
+Set inter-packet \fIgap\fP in seconds, ignoring the captured interval between packets in \fIpcap-file(s)\fP. Value for \fIgap\fP must be between 1 to 86400.
 .TP
 .B \-r \fIrate\fP
 Limit the sending to \fIrate\fP Mbps. Value for \fIrate\fP must be between 0 to 10000. This flag is intended to set the desired packet throughput. If you want to send packets at line rate of 1000 Mbps, try \fB-r\fP 1000. If you want to send packets without rate limit, try \fB-r\fP 0. This flag is typically used with \fB-l\fP 0 to send \fIpcap-file(s)\fP until stopped.
@@ -99,7 +99,7 @@ bittwiste(1), pcap(3), tcpdump(1)
 .SH BUGS
 File your bug report and send to:
 .IP
-Addy Yeow Chin Heng <ayeowch@gmail.com>
+Addy Yeow <ayeowch@gmail.com>
 .PP
 Make sure you are using the latest stable version before submitting your bug report.
 .PP
@@ -109,7 +109,7 @@ send: No buffer space available
 .PP
 We recommend that you adjust the value for \fB-r\fP flag to limit the packet throughput to a lower level that is supported by your interface, e.g. start from \fB-r\fP 10 to inject packets at a maximum rate of 10Mbps and adjust the value accordingly.
 .SH COPYRIGHT
-Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 .PP
 This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version.
 .PP
@@ -119,6 +119,6 @@ You should have received a copy of the GNU General Public License along with thi
 .SH AUTHORS
 Original author and current maintainer:
 .IP
-Addy Yeow Chin Heng
+Addy Yeow
 .PP
 The current version is available from https://bittwist.sourceforge.io

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * def.h - Definition header file for Bit-Twist project
- * Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+ * Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -29,6 +29,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,39 +48,39 @@
 
 struct pcap_timeval
 {
-    bpf_int32 tv_sec; /* seconds */
+    bpf_int32 tv_sec; /* seconds (WARNING: will overflow by 2038-01-19 03:14:07 UTC) */
     /*
-     * PCAP_MAGIC: 6-digit followed by 000 (nanoseconds rounded from microseconds)
-     * NSEC_PCAP_MAGIC: 9-digit (nanoseconds)
+     * PCAP_MAGIC: 6-digit microseconds
+     * NSEC_PCAP_MAGIC: 9-digit nanoseconds
      */
     bpf_int32 tv_usec;
 };
 
 struct pcap_sf_pkthdr
 {
-    struct pcap_timeval ts; /* time stamp */
+    struct pcap_timeval ts; /* timestamp */
     bpf_u_int32 caplen;     /* length of portion present */
     bpf_u_int32 len;        /* length this packet (off wire) */
 };
 
-#define BITTWIST_VERSION "3.6"
+#define BITTWIST_VERSION "3.7"
 #define BITTWISTE_VERSION BITTWIST_VERSION
 
-#define ETHER_ADDR_LEN 6   /* Ethernet address length */
-#define ETHER_HDR_LEN 14   /* Ethernet header length */
-#define ETHER_MAX_LEN 1514 /* maximum frame length, excluding CRC */
-#define ARP_HDR_LEN 28     /* Ethernet ARP header length */
-#define IP_ADDR_LEN 4      /* IP address length */
-#define IP_HDR_LEN 20      /* default IP header length */
-#define IP6_HDR_LEN 40     /* default IPv6 header length */
-#define ICMP_HDR_LEN 4     /* ICMP header length (up to checksum field only) */
-#define ICMP6_HDR_LEN 4    /* ICMPv6 header length (up to checksum field only) */
-#define TCP_HDR_LEN 20     /* default TCP header length */
-#define UDP_HDR_LEN 8      /* UDP header length */
+#define ETH_ADDR_LEN 6   /* Ethernet address length */
+#define ETH_HDR_LEN 14   /* Ethernet header length */
+#define ETH_MAX_LEN 1514 /* maximum frame length, excluding CRC */
+#define ARP_HDR_LEN 28   /* Ethernet ARP header length */
+#define IP_ADDR_LEN 4    /* IP address length */
+#define IP_HDR_LEN 20    /* default IP header length */
+#define IP6_HDR_LEN 40   /* default IPv6 header length */
+#define ICMP_HDR_LEN 4   /* ICMP header length (up to checksum field only) */
+#define ICMP6_HDR_LEN 4  /* ICMPv6 header length (up to checksum field only) */
+#define TCP_HDR_LEN 20   /* default TCP header length */
+#define UDP_HDR_LEN 8    /* UDP header length */
 
-#define ETHERTYPE_IP 0x0800   /* IP protocol */
-#define ETHERTYPE_IPV6 0x86dd /* IPv6 protocol */
-#define ETHERTYPE_ARP 0x0806  /* address resolution protocol */
+#define ETH_TYPE_IP 0x0800   /* IP protocol */
+#define ETH_TYPE_IPV6 0x86dd /* IPv6 protocol */
+#define ETH_TYPE_ARP 0x0806  /* address resolution protocol */
 
 #ifndef IPPROTO_ICMP
 #define IPPROTO_ICMP 1 /* internet control message protocol */
@@ -102,17 +103,18 @@ struct pcap_sf_pkthdr
 #define LINERATE_MAX 10000 /* Mbps */
 #define PKT_PAD 0x00       /* packet padding */
 #define PPS_MAX 1000000    /* max. packets per second */
-#define INTERVAL_MAX 86400 /* arbitrary maximum interval between packets in seconds */
+#define GAP_MAX 86400      /* arbitrary maximum inter-packet gap in seconds */
 
 /* bittwiste */
 #define FIELD_SET 1          /* flag to overwrite field with new value */
 #define FIELD_REPLACE 2      /* flag to overwrite matching value in field with new value */
 #define FIELD_SET_RAND 3     /* flag to overwrite field with random value */
 #define FIELD_REPLACE_RAND 4 /* flag to overwrite matching value in field with random value */
+#define PAYLOAD_MAX 1500     /* maximum payload in bytes */
+#define GAP_START 946684800  /* arbitrary start time when using custom inter-packet gap */
 
-#define PAYLOAD_MAX 1500 /* maximum payload in bytes */
-
-#define ETH 1 /* supported header specification (dummy values) */
+/* supported header specification (dummy values) */
+#define ETH 1
 #define ARP 2
 #define IP 3
 #define IP6 30
@@ -126,6 +128,7 @@ struct pcap_sf_pkthdr
 #define DS_FIELD_MAX 63            /* 6-bit DS field */
 #define ECN_FIELD_MAX 3            /* 2-bit ECN field */
 
+#define PCAP_PREAMBLE_LEN 24       /* pcap file header length */
 #define PCAP_HDR_LEN 16            /* pcap header length */
 #define PCAP_MAGIC 0xa1b2c3d4      /* pcap magic number (timestamps in microsecond resolution)*/
 #define NSEC_PCAP_MAGIC 0xa1b23c4d /* pcap magic number (timestamps in nanosecond resolution) */
@@ -154,43 +157,53 @@ struct pcap_sf_pkthdr
     } while (0)
 #endif
 
-/* Ethernet header */
-struct ether_header
-{
-    uint8_t ether_dhost[ETHER_ADDR_LEN];
-    uint8_t ether_shost[ETHER_ADDR_LEN];
-    uint16_t ether_type;
-};
+#define pcap_timeval_usadd(ts, us)                                                                 \
+    do                                                                                             \
+    {                                                                                              \
+        uint64_t total_usec = (ts)->tv_usec + (us);                                                \
+        (ts)->tv_sec += total_usec / 1000000;                                                      \
+        (ts)->tv_usec = total_usec % 1000000;                                                      \
+    } while (0)
 
-/* 48-bit Ethernet address */
-struct ether_addr
+#define pcap_timeval_nsadd(ts, ns)                                                                 \
+    do                                                                                             \
+    {                                                                                              \
+        uint64_t total_usec = (ts)->tv_usec + (ns);                                                \
+        (ts)->tv_sec += total_usec / 1000000000L;                                                  \
+        (ts)->tv_usec = total_usec % 1000000000L;                                                  \
+    } while (0)
+
+/* Ethernet header */
+struct ethhdr
 {
-    uint8_t octet[ETHER_ADDR_LEN];
+    uint8_t eth_dhost[ETH_ADDR_LEN];
+    uint8_t eth_shost[ETH_ADDR_LEN];
+    uint16_t eth_type;
 };
 
 /* Ethernet ARP header */
 struct arphdr
 {
-    uint16_t ar_hrd;                /* format of hardware address */
-#define ARPHRD_ETHER 1              /* ethernet hardware format */
-#define ARPHRD_IEEE802 6            /* token-ring hardware format */
-#define ARPHRD_ARCNET 7             /* arcnet hardware format */
-#define ARPHRD_FRELAY 15            /* frame relay hardware format */
-#define ARPHRD_IEEE1394 24          /* firewire hardware format */
-    uint16_t ar_pro;                /* format of protocol address */
-    uint8_t ar_hln;                 /* length of hardware address */
-    uint8_t ar_pln;                 /* length of protocol address */
-    uint16_t ar_op;                 /* one of: */
-#define ARPOP_REQUEST 1             /* request to resolve address */
-#define ARPOP_REPLY 2               /* response to previous request */
-#define ARPOP_REVREQUEST 3          /* request protocol address given hardware */
-#define ARPOP_REVREPLY 4            /* response giving protocol address */
-#define ARPOP_INVREQUEST 8          /* request to identify peer */
-#define ARPOP_INVREPLY 9            /* response identifying peer */
-    uint8_t ar_sha[ETHER_ADDR_LEN]; /* sender hardware address */
-    uint8_t ar_spa[IP_ADDR_LEN];    /* sender protocol address */
-    uint8_t ar_tha[ETHER_ADDR_LEN]; /* target hardware address */
-    uint8_t ar_tpa[IP_ADDR_LEN];    /* target protocol address */
+    uint16_t ar_hrd;              /* format of hardware address */
+#define ARPHRD_ETHER 1            /* ethernet hardware format */
+#define ARPHRD_IEEE802 6          /* token-ring hardware format */
+#define ARPHRD_ARCNET 7           /* arcnet hardware format */
+#define ARPHRD_FRELAY 15          /* frame relay hardware format */
+#define ARPHRD_IEEE1394 24        /* firewire hardware format */
+    uint16_t ar_pro;              /* format of protocol address */
+    uint8_t ar_hln;               /* length of hardware address */
+    uint8_t ar_pln;               /* length of protocol address */
+    uint16_t ar_op;               /* one of: */
+#define ARPOP_REQUEST 1           /* request to resolve address */
+#define ARPOP_REPLY 2             /* response to previous request */
+#define ARPOP_REVREQUEST 3        /* request protocol address given hardware */
+#define ARPOP_REVREPLY 4          /* response giving protocol address */
+#define ARPOP_INVREQUEST 8        /* request to identify peer */
+#define ARPOP_INVREPLY 9          /* response identifying peer */
+    uint8_t ar_sha[ETH_ADDR_LEN]; /* sender hardware address */
+    uint8_t ar_spa[IP_ADDR_LEN];  /* sender protocol address */
+    uint8_t ar_tha[ETH_ADDR_LEN]; /* target hardware address */
+    uint8_t ar_tpa[IP_ADDR_LEN];  /* target protocol address */
 };
 
 /* IPv4 header */
@@ -337,33 +350,41 @@ struct udphdr
 /*
  * Structures for bittwiste header specific options.
  */
+struct eth_addr_opt
+{
+    uint8_t old[ETH_ADDR_LEN]; /* 48-bit Ethernet address */
+    uint8_t new[ETH_ADDR_LEN];
+    uint8_t flag;
+};
+
 struct ethopt
 {
-    uint8_t ether_old_dhost[ETHER_ADDR_LEN];
-    uint8_t ether_new_dhost[ETHER_ADDR_LEN];
-    uint8_t ether_dhost_flag;
-    uint8_t ether_old_shost[ETHER_ADDR_LEN];
-    uint8_t ether_new_shost[ETHER_ADDR_LEN];
-    uint8_t ether_shost_flag;
-    uint16_t ether_type;
+    struct eth_addr_opt dhost;
+    struct eth_addr_opt shost;
+    uint16_t eth_type;
 };
 
 struct arpopt
 {
     uint16_t ar_op; /* opcode */
     uint8_t ar_op_flag;
-    uint8_t ar_old_sha[ETHER_ADDR_LEN]; /* sender hardware address */
-    uint8_t ar_new_sha[ETHER_ADDR_LEN];
-    uint8_t ar_sha_flag;
+    struct eth_addr_opt sha;         /* sender hardware address */
     uint8_t ar_old_spa[IP_ADDR_LEN]; /* sender protocol address */
     uint8_t ar_new_spa[IP_ADDR_LEN];
     uint8_t ar_spa_flag;
-    uint8_t ar_old_tha[ETHER_ADDR_LEN]; /* target hardware address */
-    uint8_t ar_new_tha[ETHER_ADDR_LEN];
-    uint8_t ar_tha_flag;
+    struct eth_addr_opt tha;         /* target hardware address */
     uint8_t ar_old_tpa[IP_ADDR_LEN]; /* target protocol address */
     uint8_t ar_new_tpa[IP_ADDR_LEN];
     uint8_t ar_tpa_flag;
+};
+
+struct in_addr_opt
+{
+    struct in_addr old; /* 32-bit IPv4 address */
+    struct in_addr new;
+    struct in_addr netmask; /* netmask to use when randomizing address */
+    uint8_t rand_bits;      /* number of bits available to the right that can be randomized */
+    uint8_t flag;
 };
 
 struct ipopt
@@ -387,12 +408,17 @@ struct ipopt
     uint8_t ip_old_p; /* protocol */
     uint8_t ip_new_p;
     uint8_t ip_p_flag;
-    struct in_addr ip_old_src; /* source address */
-    struct in_addr ip_new_src;
-    uint8_t ip_src_flag;
-    struct in_addr ip_old_dst; /* destination address */
-    struct in_addr ip_new_dst;
-    uint8_t ip_dst_flag;
+    struct in_addr_opt ip_src; /* options for source address */
+    struct in_addr_opt ip_dst; /* options for destination address */
+};
+
+struct in6_addr_opt
+{
+    struct in6_addr old; /* 128-bit IPv6 address */
+    struct in6_addr new;
+    struct in6_addr netmask; /* netmask to use when randomizing address */
+    uint8_t rand_bits;       /* number of bits available to the right that can be randomized */
+    uint8_t flag;
 };
 
 struct ip6opt
@@ -409,12 +435,8 @@ struct ip6opt
     uint8_t ip6_old_hop_limit; /* 8-bit hop limit */
     uint8_t ip6_new_hop_limit;
     uint8_t ip6_hop_limit_flag;
-    struct in6_addr ip6_old_src; /* 128-bit source address */
-    struct in6_addr ip6_new_src;
-    uint8_t ip6_src_flag;
-    struct in6_addr ip6_old_dst; /* 128-bit destination address */
-    struct in6_addr ip6_new_dst;
-    uint8_t ip6_dst_flag;
+    struct in6_addr_opt ip6_src; /* options for source address */
+    struct in6_addr_opt ip6_dst; /* options for destination address */
 };
 
 struct icmpopt

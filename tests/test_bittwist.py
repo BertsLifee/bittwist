@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # test_bittwist.py - bittwist Linux test suite
-# Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+# Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -120,3 +120,37 @@ def test_bittwist_2M_speed():
 
     # Elapsed times should be less than 1 second apart.
     assert all(abs(values[i] - values[i + 1]) <= 1 for i in range(len(values) - 1))
+
+
+def test_bittwist_1000us():
+    """
+    Check actual inter-packet gap when sending packets with 1000 us captured
+    inter-packet gap.
+    """
+    pcap_file = Path(__file__).resolve().parent / "pcap" / "1000us.pcap"
+    command = f"sudo {devbin} -vv -i lo -l 3 {pcap_file}"
+    output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+    output = output.decode("utf-8")
+    lines = output.split("\n")
+
+    # Look for lines matching pattern e.g. "10:53:46.295748 #6 (42 bytes)"
+    pattern = r"(\d{2}):(\d{2}):(\d{2})\.(\d+) #\d+ \(\d+ bytes\)"
+    deltas = []
+    prev_us = None
+    for line in lines:
+        match = re.match(pattern, line)
+        if not match:
+            continue
+        hh, mm, ss, us = match.groups()
+        curr_us = (
+            (int(hh) * 3_600_000_000)
+            + (int(mm) * 60_000_000)
+            + (int(ss) * 1_000_000)
+            + int(us)
+        )
+        if prev_us:
+            deltas.append(curr_us - prev_us)
+        prev_us = curr_us
+    avg_gap = int(sum(deltas) / len(deltas))
+    logging.info(f"deltas={len(deltas)} - avg_gap={avg_gap} us")
+    assert 1000 < avg_gap < 2000

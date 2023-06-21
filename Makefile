@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Makefile for Bit-Twist project
-# Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+# Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License

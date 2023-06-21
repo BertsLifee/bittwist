@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * bittwist - pcap based ethernet packet generator
- * Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+ * Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,9 +24,18 @@
 
 #include "def.h"
 
-void send_packets(char *device, FILE *fp, char *trace_file);
+typedef struct
+{
+    FILE *fp;
+    char *filename;
+    bool nsec; /* set to true if we have timestamps in nanosecond resolution */
+} trace_file_t;
+
+void load_trace_files(int argc, char **argv);
+void init_pcap(char *device);
+void send_packets(trace_file_t *trace_file);
 void throttle(int bits);
-void load_packet(FILE *fp, int pkt_len, struct pcap_sf_pkthdr *header, char *trace_file);
+void load_packet(trace_file_t *trace_file, int pkt_len, struct pcap_sf_pkthdr *header);
 void info(void);
 void cleanup(int signum);
 int32_t gmt2local(time_t t);

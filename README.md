@@ -88,12 +88,12 @@ This distribution is tested to work on Microsoft Windows 10.
   Select "Install Npcap in WinPcap API-compatible Mode" option during the
   installation.
 
-- Extract bittwist-windows-3.6.zip into C:\Users\_YOUR_USERNAME_\Downloads
+- Extract bittwist-windows-3.7.zip into C:\Users\_YOUR_USERNAME_\Downloads
 
 - In Command Prompt:
 
 ```
-> cd C:\Users\_YOUR_USERNAME_\Downloads\bittwist-windows-3.6\src
+> cd C:\Users\_YOUR_USERNAME_\Downloads\bittwist-windows-3.7\src
 > bittwist -h   (usage for packet generator)
 > bittwiste -h  (usage for packet editor)
 > bittwist -d   (to view available network cards you can send packets on)
@@ -132,7 +132,7 @@ environment:
   terminal under Cygwin environment.
 
 ```
-$ cd /cygdrive/c/Users/_YOUR_USERNAME_/Downloads/bittwist-windows-3.6
+$ cd /cygdrive/c/Users/_YOUR_USERNAME_/Downloads/bittwist-windows-3.7
 $ make
 $ make install
 $ bittwist -h   (usage for packet generator)
@@ -162,8 +162,8 @@ $ sudo ldconfig
 ### Installation
 
 ```
-$ tar -xzf bittwist-linux-3.6.tar.gz
-$ cd bittwist-linux-3.6
+$ tar -xzf bittwist-linux-3.7.tar.gz
+$ cd bittwist-linux-3.7
 $ make
 $ sudo make install
 ```
@@ -184,8 +184,8 @@ This distribution is tested to work on macOS Ventura 13.3.1
 ### Installation
 
 ```
-$ tar -xzf bittwist-macos-3.6.tar.gz
-$ cd bittwist-macos-3.6
+$ tar -xzf bittwist-macos-3.7.tar.gz
+$ cd bittwist-macos-3.7
 $ make
 $ sudo make install
 ```
@@ -203,8 +203,8 @@ This distribution is tested to work on FreeBSD 13.2-RELEASE.
 ### Installation
 
 ```
-$ tar -xzf bittwist-bsd-3.6.tar.gz
-$ cd bittwist-bsd-3.6
+$ tar -xzf bittwist-bsd-3.7.tar.gz
+$ cd bittwist-bsd-3.7
 $ make
 $ sudo make install
 ```

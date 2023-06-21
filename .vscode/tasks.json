@@ -6,11 +6,11 @@
             "type": "shell",
             "command": "make",
             "args": [
+                "DEBUG=1",
                 "bittwist"
             ],
             "group": {
                 "kind": "build",
-                "isDefault": true
             }
         },
         {
@@ -18,12 +18,12 @@
             "type": "shell",
             "command": "make",
             "args": [
+                "DEBUG=1",
                 "bittwiste"
             ],
             "group": {
                 "kind": "build",
-                "isDefault": true
             }
-        }
+        },
     ]
 }

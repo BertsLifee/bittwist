@@ -18,8 +18,8 @@ NAME
 SYNOPSIS
        bittwiste [ -I input ] [ -O output ] [ -L layer ] [ -X payload ]
                  [ -C ] [ -M linktype ] [ -D offset ] [ -R range ]
-                 [ -S timeframe ] [ -N repeat ] [ -P seed ] [ -T header ]
-                 [ header-specific-options ] [ -h ]
+                 [ -S timeframe ] [ -N repeat ] [ -G gaprange ] [ -P seed ]
+                 [ -T header ] [ header-specific-options ] [ -h ]
 
 DESCRIPTION
        This document describes the bittwiste program, the pcap(3) capture file
@@ -58,7 +58,7 @@ DESCRIPTION
        packets of a specific type supplied to the -T  flag  per  execution  of
        bittwiste  on an input trace file. In addition, the -T flag must appear
        last among the general options which are the -I, -O, -L,  -X,  -C,  -M,
-       -D, -R, -S, -N, and -P flag.
+       -D, -R, -S, -N, -G, and -P flag.
 
 OPTIONS
        -I input
@@ -128,6 +128,13 @@ OPTIONS
               Example: -N 100000
               -N flag is evaluated after -R and -S flag.
 
+       -G gaprange
+              Apply inter-packet gap between packets in microseconds from 1 to
+              (2^31  -  1). Values in gaprange are inclusive and selected ran-
+              domly. A single value implies a fixed gap.
+              Example: -G 1000-10000 or -G 1000
+              -G flag is evaluated after -R, -S, and -N flag.
+
        -P seed
               Positive integer to seed the random number generator (RNG) used,
               for  example,  to generate random port number. If unset, current
@@ -150,31 +157,48 @@ OPTIONS
               Options for eth (RFC 894):
 
               -d dmac or omac,nmac
-                     Destination MAC address. Example: -d 00:08:55:64:65:6a
-                     If omac and nmac are specified, any instances of omac  in
-                     the  destination  MAC address field will be replaced with
-                     nmac.
+                     Destination MAC address. If omac and nmac are  specified,
+                     any  instances  of  omac  in  the destination MAC address
+                     field will be replaced with nmac. You can  also  use  the
+                     string 'rand' for a random MAC address.
+
+                     Examples:
+                     -d 00:08:55:64:65:6a
+                     -d rand
+                     -d 00:08:55:64:65:6a,rand
 
               -s smac or omac,nmac
-                     Source MAC address. Example: -s 00:13:20:3e:ab:cf
-                     If omac and nmac are specified, any instances of omac  in
-                     the source MAC address field will be replaced with nmac.
+                     Source  MAC  address. If omac and nmac are specified, any
+                     instances of omac in the source MAC address field will be
+                     replaced  with  nmac.  You can also use the string 'rand'
+                     for a random MAC address.
+
+                     Examples:
+                     -s 00:13:20:3e:ab:cf
+                     -s rand
+                     -s 00:13:20:3e:ab:cf,rand
 
               -t type
-                     EtherType.  Possible  keywords for type are, ip, ip6, and
+                     EtherType. Possible keywords for type are, ip,  ip6,  and
                      arp only.
 
               Options for arp (RFC 826):
 
               -o opcode
-                     Operation code in integer value between 0 to  65535.  For
-                     example,  you  can set opcode to 1 for ARP request, 2 for
+                     Operation  code  in integer value between 0 to 65535. For
+                     example, you can set opcode to 1 for ARP request,  2  for
                      ARP reply.
 
               -s smac or omac,nmac
-                     Sender MAC address. Example: -s 00:13:20:3e:ab:cf
-                     If omac and nmac are specified, any instances of omac  in
-                     the sender MAC address field will be replaced with nmac.
+                     Sender  MAC  address. If omac and nmac are specified, any
+                     instances of omac in the sender MAC address field will be
+                     replaced  with  nmac.  You can also use the string 'rand'
+                     for a random MAC address.
+
+                     Examples:
+                     -s 00:13:20:3e:ab:cf
+                     -s rand
+                     -s 00:13:20:3e:ab:cf,rand
 
               -p sip or oip,nip
                      Sender IP address. Example: -p 192.168.0.1
@@ -182,9 +206,15 @@ OPTIONS
                      sender IP address field will be replaced with nip.
 
               -t tmac or omac,nmac
-                     Target MAC address. Example: -t 00:08:55:64:65:6a
-                     If omac and nmac are specified, any instances of omac  in
-                     the target MAC address field will be replaced with nmac.
+                     Target  MAC  address. If omac and nmac are specified, any
+                     instances of omac in the target MAC address field will be
+                     replaced  with  nmac.  You can also use the string 'rand'
+                     for a random MAC address.
+
+                     Examples:
+                     -t 00:08:55:64:65:6a
+                     -t rand
+                     -t 00:08:55:64:65:6a,rand
 
               -q tip or oip,nip
                      Target IP address. Example: -q 192.168.0.2
@@ -194,10 +224,10 @@ OPTIONS
               Options for ip (RFC 791):
 
               -c ds_field
-                     6-bit DS field (first 6-bit  of  8-bit  type  of  service
+                     6-bit  DS  field  (first  6-bit  of 8-bit type of service
                      field).
 
-                     Some  of the service class name mapping to ds_field value
+                     Some of the service class name mapping to ds_field  value
                      from RFC 4594:
 
                      0  : Standard (CS0)
@@ -206,14 +236,14 @@ OPTIONS
                      24 : Broadcast video (CS3)
                      32 : Real-time interactive (CS4)
 
-                     Example: -c 16 or -c 0x10 (to classify packet for  opera-
+                     Example:  -c 16 or -c 0x10 (to classify packet for opera-
                      tion and management of the network)
 
-                     For  more  information  on DS field, see RFC 2474 and RFC
+                     For more information on DS field, see RFC  2474  and  RFC
                      4594.
 
               -e ecn_field
-                     2-bit ECN field (last 2-bit  of  8-bit  type  of  service
+                     2-bit  ECN  field  (last  2-bit  of 8-bit type of service
                      field).
 
                      ecn_field can be set to one of the 4 values below:
@@ -223,14 +253,14 @@ OPTIONS
                      2 : ECT(0)
                      3 : CE
 
-                     Example:  -e  3 or -e 0x03 (to indicate congestion to the
+                     Example: -e 3 or -e 0x03 (to indicate congestion  to  the
                      end hosts)
 
                      For more information on ECN field, see RFC 3168.
 
               -i id or oi,ni
                      Identification in integer value between 0 to 65535. If oi
-                     and  ni are specified, any instances of oi in the identi-
+                     and ni are specified, any instances of oi in the  identi-
                      fication field will be replaced with ni. You can also use
                      the string 'rand' for a random identification.
 
@@ -245,27 +275,27 @@ OPTIONS
                      m : set the more fragment flag
 
                      Example: -f d
-                     If  any of the flags is specified, all original flags are
+                     If any of the flags is specified, all original flags  are
                      removed automatically.
 
               -o offset
                      Fragment offset in integer value between 0 to 7770. Value
-                     for  offset represents the number of 64-bit segments con-
-                     tained in earlier fragments which must  not  exceed  7770
+                     for offset represents the number of 64-bit segments  con-
+                     tained  in  earlier  fragments which must not exceed 7770
                      (62160 bytes).
 
               -t ttl or ot,nt
                      Time to live in integer value between 0 to 255 (millisec-
                      onds). If ot and nt are specified, any instances of ot in
-                     the  time to live field will be replaced with nt. You can
+                     the time to live field will be replaced with nt. You  can
                      also use the string 'rand' for a random time to live.
 
                      Example: -t 64, -i rand, or -i 64,rand
 
               -p proto or op,np
-                     Protocol number in integer value between 0 to 255. If  op
+                     Protocol  number in integer value between 0 to 255. If op
                      and np are specified, any instances of op in the protocol
-                     number field will be replaced with np. You can  also  use
+                     number  field  will be replaced with np. You can also use
                      the string 'rand' for a random protocol number. Some com-
                      mon protocol numbers are:
 
@@ -277,22 +307,36 @@ OPTIONS
                      https://www.iana.org/assignments/protocol-numbers
 
               -s sip or oip,nip
-                     Source IP address. Example: -s 192.168.0.1
-                     If oip and nip are specified, any instances of oip in the
-                     source IP address field will be replaced with nip.
+                     Source  IP address. If oip and nip are specified, any in-
+                     stances of oip in the source IP address field will be re-
+                     placed  with  nip.  If CIDR notation (RFC 4632) is speci-
+                     fied, e.g. 192.168.0.0/16, an IP address will be selected
+                     at random from the range.
+
+                     Examples:
+                     -s 192.168.0.1
+                     -s 127.0.0.1,192.168.0.0/16
+                     -s 0.0.0.0/0 (random IPv4 throughout the entire range)
 
               -d dip or oip,nip
-                     Destination IP address. Example: -d 192.168.0.2
-                     If oip and nip are specified, any instances of oip in the
-                     destination IP address field will be replaced with nip.
+                     Destination IP address. If oip and nip are specified, any
+                     instances of oip in the destination IP address field will
+                     be  replaced  with  nip.  If  CIDR notation (RFC 4632) is
+                     specified, e.g. 192.168.0.0/16, an IP address will be se-
+                     lected at random from the range.
+
+                     Examples:
+                     -d 192.168.0.2
+                     -d 127.0.0.2,192.168.0.0/16
+                     -d 0.0.0.0/0 (random IPv4 throughout the entire range)
 
               Options for ip6 (RFC 8200):
 
               -c ds_field
-                     6-bit DS  field  (first  6-bit  of  8-bit  traffic  class
+                     6-bit  DS  field  (first  6-bit  of  8-bit  traffic class
                      field).
 
-                     Some  of the service class name mapping to ds_field value
+                     Some of the service class name mapping to ds_field  value
                      from RFC 4594:
 
                      0  : Standard (CS0)
@@ -301,14 +345,14 @@ OPTIONS
                      24 : Broadcast video (CS3)
                      32 : Real-time interactive (CS4)
 
-                     Example: -c 16 or -c 0x10 (to classify packet for  opera-
+                     Example:  -c 16 or -c 0x10 (to classify packet for opera-
                      tion and management of the network)
 
-                     For  more  information  on DS field, see RFC 2474 and RFC
+                     For more information on DS field, see RFC  2474  and  RFC
                      4594.
 
               -e ecn_field
-                     2-bit ECN  field  (last  2-bit  of  8-bit  traffic  class
+                     2-bit  ECN  field  (last  2-bit  of  8-bit  traffic class
                      field).
 
                      ecn_field can be set to one of the 4 values below:
@@ -318,7 +362,7 @@ OPTIONS
                      2 : ECT(0)
                      3 : CE
 
-                     Example:  -e  3 or -e 0x03 (to indicate congestion to the
+                     Example: -e 3 or -e 0x03 (to indicate congestion  to  the
                      end hosts)
 
                      For more information on ECN field, see RFC 3168.
@@ -332,10 +376,10 @@ OPTIONS
                      to any flow. For more information, see RFC 6437.
 
               -n next_header or on,nn
-                     Next header number in integer value between 0 to 255.  If
-                     on  and nn are specified, any instances of on in the next
-                     header field will be replaced with nn. You can  also  use
-                     the  string 'rand' for a random next header number. Exam-
+                     Next  header number in integer value between 0 to 255. If
+                     on and nn are specified, any instances of on in the  next
+                     header  field  will be replaced with nn. You can also use
+                     the string 'rand' for a random next header number.  Exam-
                      ple of next header numbers:
 
                      0  : IPv6 Hop-by-Hop Option (HOPOPT)
@@ -351,24 +395,38 @@ OPTIONS
               -h hop_limit or oh,nh
                      Hop limit in integer value between 0 to 255. If oh and nh
                      are specified, any instances of oh in the hop limit field
-                     will be replaced with nh. You can  also  use  the  string
-                     'rand'  for  a  random hop limit. Destination host should
+                     will  be  replaced  with  nh. You can also use the string
+                     'rand' for a random hop limit.  Destination  host  should
                      not discard a packet with hop limit equal to 0.
 
               -s sip or oip,nip
-                     Source IP address. Example: -s fd00::1
-                     If oip and nip are specified, any instances of oip in the
-                     source IP address field will be replaced with nip.
+                     Source  IP address. If oip and nip are specified, any in-
+                     stances of oip in the source IP address field will be re-
+                     placed  with  nip.  If CIDR notation (RFC 4291) is speci-
+                     fied, e.g. 2001:db8::/64, an IP address will be  selected
+                     at random from the range.
+
+                     Examples:
+                     -s fd00::1
+                     -s ::1,2001:db8::/64
+                     -s ::/0 (random IPv6 throughout the entire range)
 
               -d dip or oip,nip
-                     Destination IP address. Example: -d fd00::2
-                     If oip and nip are specified, any instances of oip in the
-                     destination IP address field will be replaced with nip.
+                     Destination IP address. If oip and nip are specified, any
+                     instances of oip in the destination IP address field will
+                     be  replaced  with  nip.  If  CIDR notation (RFC 4291) is
+                     specified, e.g. 2001:db8::/64, an IP address will be  se-
+                     lected at random from the range.
+
+                     Examples:
+                     -d fd00::2
+                     -d ::2,2001:db8::/64
+                     -d ::/0 (random IPv6 throughout the entire range)
 
               Options for icmp (RFC 792):
 
               -t type
-                     Type of message in integer value between 0 to  255.  Some
+                     Type  of  message in integer value between 0 to 255. Some
                      common messages are:
 
                      0  : Echo reply
@@ -380,8 +438,8 @@ OPTIONS
                      https://www.iana.org/assignments/icmp-parameters
 
               -c code
-                     Error  code  for this ICMPv4 message in integer value be-
-                     tween 0 to 255. For example, code for time exceeded  mes-
+                     Error code for this ICMPv4 message in integer  value  be-
+                     tween  0 to 255. For example, code for time exceeded mes-
                      sage may have one of the following values:
 
                      0 : transit TTL exceeded
@@ -393,7 +451,7 @@ OPTIONS
               Options for icmp6 (RFC 4443):
 
               -t type
-                     Type  of  message in integer value between 0 to 255. Some
+                     Type of message in integer value between 0 to  255.  Some
                      common messages are:
 
                      3   : Time Exceeded
@@ -404,8 +462,8 @@ OPTIONS
                      https://www.iana.org/assignments/icmpv6-parameters
 
               -c code
-                     Code for this ICMPv6 message in integer value  between  0
-                     to  255.  For example, code for Time Exceeded message may
+                     Code  for  this ICMPv6 message in integer value between 0
+                     to 255. For example, code for Time Exceeded  message  may
                      have one of the following values:
 
                      0 : hop limit exceeded in transit
@@ -417,40 +475,40 @@ OPTIONS
               Options for tcp (RFC 9293):
 
               -s sport or op,np
-                     Source port number in integer value between 0  to  65535.
-                     If  op  and  np are specified, any instances of op in the
-                     source port field will be replaced with np. You can  also
+                     Source  port  number in integer value between 0 to 65535.
+                     If op and np are specified, any instances of  op  in  the
+                     source  port field will be replaced with np. You can also
                      use the string 'rand' for a random port number.
 
                      Example: -s 2000, -s rand, or -s 1000,rand
 
               -d dport or op,np
-                     Destination  port  number  in  integer value between 0 to
+                     Destination port number in integer  value  between  0  to
                      65535. If op and np are specified, any instances of op in
-                     the  destination port field will be replaced with np. You
+                     the destination port field will be replaced with np.  You
                      can also use the string 'rand' for a random port number.
 
                      Example: -d 2000, -d rand, or -d 1000,rand
 
               -q seq or os,ns
                      Sequence number in integer value between 0 to 4294967295.
-                     If  SYN  control bit is set, e.g. character s is supplied
-                     to the -f flag, seq represents the initial sequence  num-
-                     ber  (ISN)  and the first data byte is ISN + 1. If os and
-                     ns are specified, any instances of  os  in  the  sequence
-                     number  field  will be replaced with ns. You can also use
+                     If SYN control bit is set, e.g. character s  is  supplied
+                     to  the -f flag, seq represents the initial sequence num-
+                     ber (ISN) and the first data byte is ISN + 1. If  os  and
+                     ns  are  specified,  any  instances of os in the sequence
+                     number field will be replaced with ns. You can  also  use
                      the string 'rand' for a random sequence number.
 
                      Example: -q 100000, -q rand, or -q 100000,rand
 
               -a ack or oa,na
-                     Acknowledgment number  in  integer  value  between  0  to
-                     4294967295.  If  ACK control bit is set, e.g. character a
-                     is supplied to the -f flag, ack represents the  value  of
-                     the  next  sequence number that the receiver is expecting
-                     to receive. If oa and na are specified, any instances  of
-                     oa  in  the  acknowledgment number field will be replaced
-                     with na. You can also use the string 'rand' for a  random
+                     Acknowledgment  number  in  integer  value  between  0 to
+                     4294967295. If ACK control bit is set, e.g.  character  a
+                     is  supplied  to the -f flag, ack represents the value of
+                     the next sequence number that the receiver  is  expecting
+                     to  receive. If oa and na are specified, any instances of
+                     oa in the acknowledgment number field  will  be  replaced
+                     with  na. You can also use the string 'rand' for a random
                      acknowledgment number.
 
                      Example: -a 100000, -a rand, or -a 100000,rand
@@ -469,36 +527,36 @@ OPTIONS
                      f : no more data from sender
 
                      Example: -f s
-                     If  any of the flags is specified, all original flags are
+                     If any of the flags is specified, all original flags  are
                      removed automatically.
 
               -w win
-                     Window size in integer value between 0 to 65535.  If  ACK
-                     control  bit  is set, e.g. character a is supplied to the
-                     -f flag, win represents the number of data bytes,  begin-
-                     ning  with the one indicated in the acknowledgment number
+                     Window  size  in integer value between 0 to 65535. If ACK
+                     control bit is set, e.g. character a is supplied  to  the
+                     -f  flag, win represents the number of data bytes, begin-
+                     ning with the one indicated in the acknowledgment  number
                      field that the receiver is willing to accept.
 
               -u urg
-                     Urgent pointer in integer value between 0  to  65535.  If
-                     URG  control  bit is set, e.g. character u is supplied to
-                     the -f flag, urg represents a pointer that points to  the
+                     Urgent  pointer  in  integer value between 0 to 65535. If
+                     URG control bit is set, e.g. character u is  supplied  to
+                     the  -f flag, urg represents a pointer that points to the
                      first data byte following the urgent data.
 
               Options for udp (RFC 768):
 
               -s sport or op,np
-                     Source  port  number in integer value between 0 to 65535.
-                     If op and np are specified, any instances of  op  in  the
-                     source  port field will be replaced with np. You can also
+                     Source port number in integer value between 0  to  65535.
+                     If  op  and  np are specified, any instances of op in the
+                     source port field will be replaced with np. You can  also
                      use the string 'rand' for a random port number.
 
                      Example: -s 2000, -s rand, or -s 1000,rand
 
               -d dport or op,np
-                     Destination port number in integer  value  between  0  to
+                     Destination  port  number  in  integer value between 0 to
                      65535. If op and np are specified, any instances of op in
-                     the destination port field will be replaced with np.  You
+                     the  destination port field will be replaced with np. You
                      can also use the string 'rand' for a random port number.
 
                      Example: -d 2000, -d rand, or -d 1000,rand
@@ -509,13 +567,26 @@ SEE ALSO
 BUGS
        File your bug report and send to:
 
-              Addy Yeow Chin Heng &lt;ayeowch@gmail.com&gt;
+              Addy Yeow &lt;ayeowch@gmail.com&gt;
 
-       Make  sure  you  are  using the latest stable version before submitting
+       Make sure you are using the latest  stable  version  before  submitting
        your bug report.
 
+       When  running  bittwiste  with  both  the -N and -G flags, large inter-
+       packet gap may  result  in  the  packet  timestamp  beyond  Unix  epoch
+       2147483647  (2038-01-19  03:14:07  UTC) to overflow. This is due to the
+       use of signed 32-bit integer to store timestamp in pcap(3) header. Sim-
+       ply  changing  the data type, e.g. using unsigned 64-bit integer, would
+       break the compatibility of the output trace file with existing systems.
+
+       The workaround built into bittwiste is  to  use  Unix  epoch  946684800
+       (2020-01-01  00:00:00  UTC) as the starting reference timestamp when -G
+       flag is specified. This translates to a maximum timespan of 38 years or
+       559165  packets  in the output trace file when using the maximum inter-
+       packet gap, i.e. -G 2147483647.
+
 COPYRIGHT
-       Copyright (C) 2006 - 2023 Addy Yeow Chin Heng &lt;ayeowch@gmail.com&gt;
+       Copyright (C) 2006 - 2023 Addy Yeow &lt;ayeowch@gmail.com&gt;
 
        This program is free software; you can redistribute it and/or modify it
        under  the  terms of the GNU General Public License as published by the
@@ -534,13 +605,13 @@ COPYRIGHT
 AUTHORS
        Original author and current maintainer:
 
-              Addy Yeow Chin Heng
+              Addy Yeow
 
        The current version is available from https://bittwist.sourceforge.io
 
 
 
-                                 17 June 2023                     BITTWISTE(1)
+                                 27 June 2023                     BITTWISTE(1)
 </pre>
 </body>
 </html>

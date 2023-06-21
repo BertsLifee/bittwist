@@ -1,10 +1,18 @@
+27/06/2023: Version 3.7
+bittwist (generator)
+- 30% speed up when sending large pcap file
+bittwiste (editor)
+- added -G option to set fixed or random inter-packet gap in microseconds
+- added support for CIDR notation when modifying IPv4/IPv6 address
+- added support for random MAC address
+
 17/06/2023: Version 3.6
 - added github repo for source code browsing:
   https://github.com/ayeowch/bittwist
 bittwist (generator)
 - fixed linerate throttling
 - updated -p option to send packets at set packets per second (pps)
-- added -t option to set inter-packet delay (this was previously -p option)
+- added -t option to set inter-packet gap (this was previously -p option)
 bittwiste (editor)
 - added option to edit IPv6 next header
 - added random number support for id, ttl, proto, next header, hop limit

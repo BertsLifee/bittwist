@@ -17,7 +17,7 @@ NAME
 
 SYNOPSIS
        bittwist [ -dvh ] [ -i interface ] [ -s length ] [ -l loop ]
-                [ -c count ] [ -p pps ] [ -t interval ] [ -r rate ]
+                [ -c count ] [ -p pps ] [ -t gap ] [ -r rate ]
                 pcap-file(s)
 
 DESCRIPTION
@@ -77,10 +77,9 @@ OPTIONS
        -p pps Send pps packets per second. Value for pps must be between 1  to
               1000000.
 
-       -t interval
-              Set  inter-packet delay to interval in seconds, ignoring the ac-
-              tual interval between packets in pcap-file(s). Value for  inter-
-              val must be between 1 to 86400.
+       -t gap Set  inter-packet gap in seconds, ignoring the captured interval
+              between packets in pcap-file(s). Value for gap must be between 1
+              to 86400.
 
        -r rate
               Limit the sending to rate Mbps. Value for rate must be between 0
@@ -98,7 +97,7 @@ SEE ALSO
 BUGS
        File your bug report and send to:
 
-              Addy Yeow Chin Heng &lt;ayeowch@gmail.com&gt;
+              Addy Yeow &lt;ayeowch@gmail.com&gt;
 
        Make sure you are using the latest  stable  version  before  submitting
        your bug report.
@@ -114,7 +113,7 @@ BUGS
        just the value accordingly.
 
 COPYRIGHT
-       Copyright (C) 2006 - 2023 Addy Yeow Chin Heng &lt;ayeowch@gmail.com&gt;
+       Copyright (C) 2006 - 2023 Addy Yeow &lt;ayeowch@gmail.com&gt;
 
        This program is free software; you can redistribute it and/or modify it
        under the terms of the GNU General Public License as published  by  the
@@ -133,13 +132,13 @@ COPYRIGHT
 AUTHORS
        Original author and current maintainer:
 
-              Addy Yeow Chin Heng
+              Addy Yeow
 
        The current version is available from https://bittwist.sourceforge.io
 
 
 
-                                 17 June 2023                      BITTWIST(1)
+                                 27 June 2023                      BITTWIST(1)
 </pre>
 </body>
 </html>

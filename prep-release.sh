@@ -89,10 +89,14 @@ tar -czvf release/bittwist-bsd-${VERSION}.tar.gz bittwist-bsd-${VERSION}
 tar -czvf release/bittwist-macos-${VERSION}.tar.gz bittwist-macos-${VERSION}
 zip -r release/bittwist-windows-${VERSION}.zip bittwist-windows-${VERSION}
 
-sha256sum release/bittwist-linux-${VERSION}.tar.gz > release/bittwist-linux-${VERSION}.tar.gz.sha256sum
-sha256sum release/bittwist-bsd-${VERSION}.tar.gz > release/bittwist-bsd-${VERSION}.tar.gz.sha256sum
-sha256sum release/bittwist-macos-${VERSION}.tar.gz > release/bittwist-macos-${VERSION}.tar.gz.sha256sum
-sha256sum release/bittwist-windows-${VERSION}.zip > release/bittwist-windows-${VERSION}.zip.sha256sum
+cd release
+
+sha256sum bittwist-linux-${VERSION}.tar.gz > bittwist-linux-${VERSION}.tar.gz.sha256sum
+sha256sum bittwist-bsd-${VERSION}.tar.gz > bittwist-bsd-${VERSION}.tar.gz.sha256sum
+sha256sum bittwist-macos-${VERSION}.tar.gz > bittwist-macos-${VERSION}.tar.gz.sha256sum
+sha256sum bittwist-windows-${VERSION}.zip > bittwist-windows-${VERSION}.zip.sha256sum
+
+cd ..
 
 chmod -R u+rw .
 chmod -R go-w .

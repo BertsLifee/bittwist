@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * bittwiste - pcap capture file editor
- * Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+ * Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -26,25 +26,26 @@
 char *program_name;
 
 /* general options */
-int header_opt = 0;     /* specifies which hdr to edit */
-int layer_opt = 0;      /* copy up to the specified layer only */
-int start_oset_opt = 0; /* delete the specified byte offset */
-int end_oset_opt = 0;
-int start_opt = 0; /* copy the specified range of packets only */
-int end_opt = 0;
-time_t start_sec_opt = 0; /* copy packets within the specified timeframe only */
-time_t end_sec_opt = 0;
-int repeat_opt = 0; /* duplicate packets for the specified times */
+int header_opt = -1; /* specifies which header to edit, -1 -> no header selected */
+int layer_opt = 0;   /* copy up to the specified layer only */
+int start_oset_opt = 0, end_oset_opt = 0;  /* delete the specified byte offset */
+int start_opt = 0, end_opt = 0;            /* copy the specified range of packets only */
+time_t start_sec_opt = 0, end_sec_opt = 0; /* copy packets within the specified timeframe only */
+uint32_t gap_start_opt, gap_end_opt;       /* inter-packet gap range in microseconds (inclusive) */
+struct pcap_timeval gap_last_ts = {0, 0};  /* track last timestamp when applying custom gap */
+int repeat_opt = 0;                        /* duplicate packets for the specified times */
 
 int csum_opt = 1;             /* set to 0 to disable checksum correction */
 uint8_t *payload_opt = NULL;  /* payload in hex digits *NOTFREED* */
 uint16_t payload_len_opt = 0; /* length of payload in bytes */
 int linktype_opt = -1;        /* pcap preamble link type field, -1 -> no override */
 
+bool nsec = false; /* set to true if we have timestamps in nanosecond resolution */
+
 /* TinyMT as random number generator (RNG) */
 tinymt64_t tinymt;
 
-/* hdr specific options *NOTFREED* */
+/* header specific options *NOTFREED* */
 struct ethopt *ethopt;     /* Ethernet options */
 struct arpopt *arpopt;     /* ARP options */
 struct ipopt *ipopt;       /* IP options */
@@ -76,7 +77,7 @@ int main(int argc, char **argv)
         program_name = argv[0];
 
     /* process general options */
-    while ((c = getopt(argc, argv, "I:O:L:X:CM:D:R:S:N:P:T:h")) != -1)
+    while ((c = getopt(argc, argv, "I:O:L:X:CM:D:R:S:N:G:P:T:h")) != -1)
     {
         switch (c)
         {
@@ -205,6 +206,24 @@ int main(int argc, char **argv)
             if (repeat_opt < 0)
                 error("invalid repeat specification");
             break;
+        case 'G': /* inter-packet gap in microseconds, e.g. -G 1000-10000 or -G 1000 */
+            str = strdup(optarg);
+            if (str == NULL)
+                error("strdup(): cannot allocate memory for str");
+            if ((cp = (char *)strtok(str, "-")) == NULL)
+                error("invalid gap range specification");
+            gap_start_opt = strtol(cp, NULL, 0);
+            if ((cp = (char *)strtok(NULL, "-")) == NULL)
+                gap_end_opt = gap_start_opt; /* fixed gap */
+            else
+                gap_end_opt = strtol(cp, NULL, 0); /* ranged random gap */
+            free(str);
+            str = NULL;
+            if (gap_start_opt <= 0 || gap_end_opt <= 0 || gap_start_opt > INT32_MAX ||
+                gap_end_opt > INT32_MAX || (gap_start_opt > gap_end_opt))
+                error("invalid gap range specification");
+            gap_last_ts.tv_sec = GAP_START;
+            break;
         case 'P': /* optional positive integer to seed RNG */
             seed = strtol(optarg, NULL, 0);
             if (seed < 0)
@@ -256,14 +275,221 @@ int main(int argc, char **argv)
     exit(EXIT_SUCCESS);
 }
 
+void set_eth_addr_options(char *optarg, struct eth_addr_opt *opt)
+{
+    /*
+     * optarg:
+     * - 11:11:11:11:11:11 (overwrite MAC), flag = FIELD_SET
+     * - 11:11:11:11:11:11,22:22:22:22:22:22 (overwrite matching MAC), flag = FIELD_REPLACE
+     * - rand (overwrite MAC with random MAC), flag = FIELD_SET_RAND
+     * - 11:11:11:11:11:11,rand (overwrite matching MAC with random MAC), flag = FIELD_REPLACE_RAND
+     */
+    char *str = strdup(optarg);
+    if (str == NULL)
+        error("strdup(): cannot allocate memory for str");
+
+    char *cp = strtok(str, ",");
+    if (cp == NULL)
+        error("invalid MAC address");
+
+    if (strcasecmp(cp, "rand") == 0)
+        opt->flag = FIELD_SET_RAND; /* overwrite MAC with random MAC */
+    else
+    {
+        if (eth_aton(cp, opt->old) != 1)
+            error("invalid MAC address");
+
+        cp = strtok(NULL, ",");
+        if (cp == NULL)
+            opt->flag = FIELD_SET; /* overwrite MAC */
+        else if (strcasecmp(cp, "rand") == 0)
+            opt->flag = FIELD_REPLACE_RAND; /* overwrite matching MAC with random MAC */
+        else
+        {
+            opt->flag = FIELD_REPLACE; /* overwrite matching MAC */
+            if (eth_aton(cp, opt->new) != 1)
+                error("invalid MAC address");
+        }
+    }
+
+    free(str);
+}
+
+void set_rand_in_addr_options(char *cp, struct in_addr *netnum, struct in_addr *netmask,
+                              uint8_t *rand_bits)
+{
+    uint8_t netlen;
+
+    /*
+     * parse CIDR notation in the form of <network number>/<prefix length>, e.g. 1.0.0.0/8
+     * 0.0.0.0/0 will result in random IPv4 selected from the entire range
+     */
+    char *input_netnum = strtok(cp, "/");
+    char *input_netlen = strtok(NULL, "/");
+
+    if (input_netnum == NULL || input_netlen == NULL)
+        error("invalid CIDR notation");
+
+    if (inet_pton(AF_INET, input_netnum, netnum) != 1)
+        error("invalid CIDR notation");
+
+    /* extract prefix length to calculate netmask */
+    netlen = atoi(input_netlen);
+    if (netlen < 0 || netlen > 32)
+        error("invalid CIDR notation");
+
+    /* number of bits available to the right that can be randomized */
+    *rand_bits = 32 - netlen;
+
+    /* calculate network mask and update the network number */
+    if (netlen == 0)
+        netmask->s_addr = 0; /* special handling for /0 */
+    else
+    {
+        netmask->s_addr = htonl((uint32_t)(0xffffffffu << (32 - netlen)));
+        if (netnum->s_addr != (netnum->s_addr & netmask->s_addr))
+            netnum->s_addr &= netmask->s_addr;
+    }
+}
+
+void set_in_addr_options(char *optarg, struct in_addr_opt *opt)
+{
+    /*
+     * optarg:
+     * - 1.1.1.1 (overwrite IP), flag = FIELD_SET
+     * - 1.1.1.1,2.2.2.2 (overwrite matching IP), flag = FIELD_REPLACE
+     * - 1.0.0.0/8 (overwrite IP with IP from CIDR), flag = FIELD_SET_RAND
+     * - 1.1.1.1,2.0.0.0/8 (overwrite matching IP with IP from CIDR), flag = FIELD_REPLACE_RAND
+     */
+    char *str = strdup(optarg);
+    if (str == NULL)
+        error("strdup(): cannot allocate memory for str");
+
+    char *cp = strtok(str, ",");
+    if (cp == NULL)
+        error("invalid IPv4 address");
+
+    if (strstr(cp, "/") != NULL && strchr(cp, ',') == NULL)
+    {
+        opt->flag = FIELD_SET_RAND; /* overwrite IP with IP from CIDR */
+        set_rand_in_addr_options(cp, &opt->new, &opt->netmask, &opt->rand_bits);
+    }
+    else
+    {
+        if (inet_pton(AF_INET, cp, &opt->old) != 1)
+            error("invalid IPv4 address");
+
+        cp = strtok(NULL, ",");
+        if (cp == NULL)
+            opt->flag = FIELD_SET; /* overwrite IP */
+        else if (strstr(cp, "/") != NULL && strchr(cp, ',') == NULL)
+        {
+            opt->flag = FIELD_REPLACE_RAND; /* overwrite matching IP with IP from CIDR */
+            set_rand_in_addr_options(cp, &opt->new, &opt->netmask, &opt->rand_bits);
+        }
+        else
+        {
+            opt->flag = FIELD_REPLACE; /* overwrite matching IP */
+            if (inet_pton(AF_INET, cp, &opt->new) != 1)
+                error("invalid IPv4 address");
+        }
+    }
+
+    free(str);
+}
+
+void set_rand_in6_addr_options(char *cp, struct in6_addr *netnum, struct in6_addr *netmask,
+                               uint8_t *rand_bits)
+{
+    uint8_t netlen, shift, i, s;
+
+    /*
+     * parse CIDR notation in the form of <network number>/<prefix length>, e.g. 2001:db8::/48
+     * ::/0 will result in random IPv6 selected from the entire range
+     */
+    char *input_netnum = strtok(cp, "/");
+    char *input_netlen = strtok(NULL, "/");
+
+    if (input_netnum == NULL || input_netlen == NULL)
+        error("invalid CIDR notation");
+
+    if (inet_pton(AF_INET6, input_netnum, netnum) != 1)
+        error("invalid CIDR notation");
+
+    /* extract prefix length to calculate netmask */
+    netlen = atoi(input_netlen);
+    if (netlen < 0 || netlen > 128)
+        error("invalid CIDR notation");
+
+    /* number of bits available to the right that can be randomized */
+    *rand_bits = 128 - netlen;
+
+    /* calculate network mask and update the network number */
+    shift = netlen;
+    for (i = 0; i < 16; i++) /* 16 octets in IPv6 */
+    {
+        s = (shift > 8) ? 8 : shift;
+        shift -= s;
+        netmask->s6_addr[i] = (uint8_t)(0xffu << (8 - s));
+        if (netnum->s6_addr[i] != (netnum->s6_addr[i] & netmask->s6_addr[i]))
+            netnum->s6_addr[i] &= netmask->s6_addr[i];
+    }
+}
+
+void set_in6_addr_options(char *optarg, struct in6_addr_opt *opt)
+{
+    /*
+     * optarg:
+     * - ::1 (overwrite IP), flag = FIELD_SET
+     * - ::1,::2 (overwrite matching IP), flag = FIELD_REPLACE
+     * - ::2/64 (overwrite IP with IP from CIDR), flag = FIELD_SET_RAND
+     * - ::1,::2/64 (overwrite matching IP with IP from CIDR), flag = FIELD_REPLACE_RAND
+     */
+    char *str = strdup(optarg);
+    if (str == NULL)
+        error("strdup(): cannot allocate memory for str");
+
+    char *cp = strtok(str, ",");
+    if (cp == NULL)
+        error("invalid IPv6 address");
+
+    if (strstr(cp, "/") != NULL && strchr(cp, ',') == NULL)
+    {
+        opt->flag = FIELD_SET_RAND; /* overwrite IP with IP from CIDR */
+        set_rand_in6_addr_options(cp, &opt->new, &opt->netmask, &opt->rand_bits);
+    }
+    else
+    {
+        if (inet_pton(AF_INET6, cp, &opt->old) != 1)
+            error("invalid IPv6 address");
+
+        cp = strtok(NULL, ",");
+        if (cp == NULL)
+            opt->flag = FIELD_SET; /* overwrite IP */
+        else if (strstr(cp, "/") != NULL && strchr(cp, ',') == NULL)
+        {
+            opt->flag = FIELD_REPLACE_RAND; /* overwrite matching IP with IP from CIDR */
+            set_rand_in6_addr_options(cp, &opt->new, &opt->netmask, &opt->rand_bits);
+        }
+        else
+        {
+            opt->flag = FIELD_REPLACE; /* overwrite matching IP */
+            if (inet_pton(AF_INET6, cp, &opt->new) != 1)
+                error("invalid IPv6 address");
+        }
+    }
+
+    free(str);
+}
+
 void set_number_options(char *optarg, void *val_a, void *val_b, uint8_t *flag, size_t val_size)
 {
     /*
      * optarg:
-     * 1) 1 (overwrite field with val_a), flag = FIELD_SET
-     * 2) 1,2 (overwrite matching value in field with val_b), flag = FIELD_REPLACE
-     * 3) rand (overwrite field with random value), flag = FIELD_SET_RAND
-     * 4) 1,rand (overwrite matching value in field with random value), flag = FIELD_REPLACE_RAND
+     * - 1 (overwrite value), flag = FIELD_SET
+     * - 1,2 (overwrite matching value), flag = FIELD_REPLACE
+     * - rand (overwrite value with random value), flag = FIELD_SET_RAND
+     * - 1,rand (overwrite matching value with random value), flag = FIELD_REPLACE_RAND
      */
     char *str = strdup(optarg);
     if (str == NULL)
@@ -274,7 +500,7 @@ void set_number_options(char *optarg, void *val_a, void *val_b, uint8_t *flag, s
         error("invalid number specification");
 
     if (strcasecmp(cp, "rand") == 0)
-        *flag = FIELD_SET_RAND; /* overwrite field with random value */
+        *flag = FIELD_SET_RAND; /* overwrite value with random value */
     else
     {
         /* input value can be integer, hexadecimal, or octal */
@@ -305,9 +531,9 @@ void set_number_options(char *optarg, void *val_a, void *val_b, uint8_t *flag, s
 
         cp = strtok(NULL, ",");
         if (cp == NULL)
-            *flag = FIELD_SET; /* overwrite field with val_a */
+            *flag = FIELD_SET; /* overwrite value */
         else if (strcasecmp(cp, "rand") == 0)
-            *flag = FIELD_REPLACE_RAND; /* overwrite matching value in field with random value */
+            *flag = FIELD_REPLACE_RAND; /* overwrite matching value with random value */
         else
         {
             v = strtoul(cp, NULL, 0);
@@ -321,7 +547,7 @@ void set_number_options(char *optarg, void *val_a, void *val_b, uint8_t *flag, s
             else
                 *((uint32_t *)val_b) = (uint32_t)v;
 
-            *flag = FIELD_REPLACE; /* overwrite matching value in field with val_b */
+            *flag = FIELD_REPLACE; /* overwrite matching value */
         }
     }
 
@@ -332,7 +558,6 @@ void parse_header_options(int argc, char **argv)
 {
     char *cp;
     int c;
-    struct ether_addr *ether_addr;
     char *str = NULL;
     uint32_t v; /* input value (can be integer, hexadecimal, or octal) returned by strtol */
 
@@ -347,54 +572,18 @@ void parse_header_options(int argc, char **argv)
             switch (c)
             {
             case 'd': /* destination MAC */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid destination MAC address");
-                if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                    error("invalid destination MAC address");
-                memcpy(ethopt->ether_old_dhost, ether_addr, sizeof(struct ether_addr));
-                if ((cp = (char *)strtok(NULL, ",")) == NULL) /* overwrite all destination MAC */
-                    ethopt->ether_dhost_flag = 1;
-                else
-                { /* overwrite matching destination MAC only */
-                    ethopt->ether_dhost_flag = 2;
-                    if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                        error("invalid destination MAC address");
-                    memcpy(ethopt->ether_new_dhost, ether_addr, sizeof(struct ether_addr));
-                }
-                free(str);
-                str = NULL;
+                set_eth_addr_options(optarg, &ethopt->dhost);
                 break;
             case 's': /* source MAC */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid source MAC address");
-                if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                    error("invalid source MAC address");
-                memcpy(ethopt->ether_old_shost, ether_addr, sizeof(struct ether_addr));
-                if ((cp = (char *)strtok(NULL, ",")) == NULL) /* overwrite all source MAC */
-                    ethopt->ether_shost_flag = 1;
-                else
-                { /* overwrite matching source MAC only */
-                    ethopt->ether_shost_flag = 2;
-                    if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                        error("invalid source MAC address");
-                    memcpy(ethopt->ether_new_shost, ether_addr, sizeof(struct ether_addr));
-                }
-                free(str);
-                str = NULL;
+                set_eth_addr_options(optarg, &ethopt->shost);
                 break;
             case 't': /* type */
                 if (strcasecmp(optarg, "ip") == 0)
-                    ethopt->ether_type = ETHERTYPE_IP;
+                    ethopt->eth_type = ETH_TYPE_IP;
                 else if (strcasecmp(optarg, "ip6") == 0)
-                    ethopt->ether_type = ETHERTYPE_IPV6;
+                    ethopt->eth_type = ETH_TYPE_IPV6;
                 else if (strcasecmp(optarg, "arp") == 0)
-                    ethopt->ether_type = ETHERTYPE_ARP;
+                    ethopt->eth_type = ETH_TYPE_ARP;
                 else
                     error("invalid Ethernet type specification");
                 break;
@@ -421,25 +610,7 @@ void parse_header_options(int argc, char **argv)
                 arpopt->ar_op_flag = 1;
                 break;
             case 's': /* sender MAC */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid sender MAC address");
-                if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                    error("invalid sender MAC address");
-                memcpy(arpopt->ar_old_sha, ether_addr, sizeof(struct ether_addr));
-                if ((cp = (char *)strtok(NULL, ",")) == NULL) /* overwrite all sender MAC */
-                    arpopt->ar_sha_flag = 1;
-                else
-                { /* overwrite matching sender MAC only */
-                    arpopt->ar_sha_flag = 2;
-                    if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                        error("invalid sender MAC address");
-                    memcpy(arpopt->ar_new_sha, ether_addr, sizeof(struct ether_addr));
-                }
-                free(str);
-                str = NULL;
+                set_eth_addr_options(optarg, &arpopt->sha);
                 break;
             case 'p': /* sender IP */
                 str = strdup(optarg);
@@ -461,25 +632,7 @@ void parse_header_options(int argc, char **argv)
                 str = NULL;
                 break;
             case 't': /* target MAC */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid target MAC address");
-                if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                    error("invalid target MAC address");
-                memcpy(arpopt->ar_old_tha, ether_addr, sizeof(struct ether_addr));
-                if ((cp = (char *)strtok(NULL, ",")) == NULL) /* overwrite all target MAC */
-                    arpopt->ar_tha_flag = 1;
-                else
-                { /* overwrite matching target MAC only */
-                    arpopt->ar_tha_flag = 2;
-                    if ((ether_addr = (struct ether_addr *)ether_aton(cp)) == NULL)
-                        error("invalid target MAC address");
-                    memcpy(arpopt->ar_new_tha, ether_addr, sizeof(struct ether_addr));
-                }
-                free(str);
-                str = NULL;
+                set_eth_addr_options(optarg, &arpopt->tha);
                 break;
             case 'q': /* target IP */
                 str = strdup(optarg);
@@ -566,43 +719,10 @@ void parse_header_options(int argc, char **argv)
                                    sizeof(uint8_t));
                 break;
             case 's': /* source IP */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid source IP address");
-                if (inet_pton(AF_INET, cp, &(ipopt->ip_old_src)) != 1)
-                    error("invalid source IP address");
-                if ((cp = (char *)strtok(NULL, ",")) == NULL) /* overwrite all source IP address */
-                    ipopt->ip_src_flag = 1;
-                else
-                { /* overwrite matching IP address only */
-                    ipopt->ip_src_flag = 2;
-                    if (inet_pton(AF_INET, cp, &(ipopt->ip_new_src)) != 1)
-                        error("invalid source IP address");
-                }
-                free(str);
-                str = NULL;
+                set_in_addr_options(optarg, &ipopt->ip_src);
                 break;
             case 'd': /* destination IP */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid destination IP address");
-                if (inet_pton(AF_INET, cp, &(ipopt->ip_old_dst)) != 1)
-                    error("invalid destination IP address");
-                if ((cp = (char *)strtok(NULL, ",")) ==
-                    NULL) /* overwrite all destination IP address */
-                    ipopt->ip_dst_flag = 1;
-                else
-                { /* overwrite matching IP address only */
-                    ipopt->ip_dst_flag = 2;
-                    if (inet_pton(AF_INET, cp, &(ipopt->ip_new_dst)) != 1)
-                        error("invalid destination IP address");
-                }
-                free(str);
-                str = NULL;
+                set_in_addr_options(optarg, &ipopt->ip_dst);
                 break;
             default:
                 usage();
@@ -650,43 +770,10 @@ void parse_header_options(int argc, char **argv)
                                    &ip6opt->ip6_hop_limit_flag, sizeof(uint8_t));
                 break;
             case 's': /* source IP */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid source IPv6 address");
-                if (inet_pton(AF_INET6, cp, &ip6opt->ip6_old_src) != 1)
-                    error("invalid source IPv6 address");
-                if ((cp = (char *)strtok(NULL, ",")) == NULL) /* overwrite all source IP address */
-                    ip6opt->ip6_src_flag = 1;
-                else
-                { /* overwrite matching IP address only */
-                    ip6opt->ip6_src_flag = 2;
-                    if (inet_pton(AF_INET6, cp, &ip6opt->ip6_new_src) != 1)
-                        error("invalid source IPv6 address");
-                }
-                free(str);
-                str = NULL;
+                set_in6_addr_options(optarg, &ip6opt->ip6_src);
                 break;
             case 'd': /* destination IP */
-                str = strdup(optarg);
-                if (str == NULL)
-                    error("strdup(): cannot allocate memory for str");
-                if ((cp = (char *)strtok(str, ",")) == NULL)
-                    error("invalid destination IPv6 address");
-                if (inet_pton(AF_INET6, cp, &ip6opt->ip6_old_dst) != 1)
-                    error("invalid destination IPv6 address");
-                if ((cp = (char *)strtok(NULL, ",")) ==
-                    NULL) /* overwrite all destination IP address */
-                    ip6opt->ip6_dst_flag = 1;
-                else
-                { /* overwrite matching IP address only */
-                    ip6opt->ip6_dst_flag = 2;
-                    if (inet_pton(AF_INET6, cp, &ip6opt->ip6_new_dst) != 1)
-                        error("invalid destination IPv6 address");
-                }
-                free(str);
-                str = NULL;
+                set_in6_addr_options(optarg, &ip6opt->ip6_dst);
                 break;
             default:
                 usage();
@@ -876,6 +963,10 @@ void parse_trace(char *infile, char *outfile)
     if (preamble.magic != PCAP_MAGIC && preamble.magic != NSEC_PCAP_MAGIC)
         error("%s is not a valid pcap based trace file", infile);
 
+    /* we have timestamps in nanosecond resolution */
+    if (preamble.magic == NSEC_PCAP_MAGIC)
+        nsec = true;
+
     /* override pcap preamble link type with user specified link type */
     if (linktype_opt >= 0)
         preamble.linktype = linktype_opt;
@@ -885,9 +976,9 @@ void parse_trace(char *infile, char *outfile)
         error("fwrite(): error writing %s", outfile);
 
     /* pcap hdr */
-    header = (struct pcap_sf_pkthdr *)malloc(PCAP_HDR_LEN);
+    header = (struct pcap_sf_pkthdr *)calloc(1, PCAP_HDR_LEN);
     if (header == NULL)
-        error("malloc(): cannot allocate memory for header");
+        error("calloc(): cannot allocate memory for header");
 
     /* check -N to duplicate packets */
     while (repeat_index <= repeat_opt)
@@ -991,24 +1082,27 @@ void modify_packet(const uint8_t *pkt_data, struct pcap_sf_pkthdr *header, char 
 
     /* modified pkt_data inclusive of pcap hdr */
     new_pkt_data =
-        (uint8_t *)malloc(sizeof(uint8_t) * (PCAP_HDR_LEN + ETHER_MAX_LEN)); /* 16 + 1514 bytes */
+        (uint8_t *)malloc(sizeof(uint8_t) * (PCAP_HDR_LEN + ETH_MAX_LEN)); /* 16 + 1514 bytes */
     if (new_pkt_data == NULL)
         error("malloc(): cannot allocate memory for new_pkt_data");
-    memset(new_pkt_data, 0, PCAP_HDR_LEN + ETHER_MAX_LEN);
+    memset(new_pkt_data, 0, PCAP_HDR_LEN + ETH_MAX_LEN);
 
     /*
      * encapsulated editing function starting from link-layer hdr.
-     * parse_ethernet() returns bytes written in new_pkt_data starting from
-     * link-layer hdr
+     * parse_eth() returns bytes written in new_pkt_data starting from link-layer hdr
      */
-    ret = parse_ethernet(pkt_data, new_pkt_data, header) + PCAP_HDR_LEN;
+    ret = parse_eth(pkt_data, new_pkt_data, header) + PCAP_HDR_LEN;
+
+    /* we are editing pcap hdr to apply custom inter-packet gap */
+    if (gap_start_opt > 0)
+        update_pcap_hdr(header);
 
     /* copy pcap hdr into new_pkt_data */
     memcpy(new_pkt_data, header, PCAP_HDR_LEN);
 
     /* no changes */
     if (ret == PCAP_HDR_LEN)
-    { /* parse_ethernet() returns 0 */
+    { /* parse_eth() returns 0 */
         /* write pcap hdr */
         if (fwrite(header, PCAP_HDR_LEN, 1, *fp_outfile) != 1)
             error("fwrite(): error writing %s", outfile);
@@ -1101,8 +1195,24 @@ void load_input_file(char *infile, FILE **fp)
     }
 }
 
-uint16_t parse_ethernet(const uint8_t *pkt_data, uint8_t *new_pkt_data,
-                        struct pcap_sf_pkthdr *header)
+void update_pcap_hdr(struct pcap_sf_pkthdr *header)
+{
+    uint64_t us;
+
+    if (gap_start_opt == gap_end_opt)
+        us = gap_start_opt;
+    else
+        us = gap_start_opt + get_random_number(gap_end_opt - gap_start_opt);
+
+    if (nsec)
+        pcap_timeval_nsadd(&gap_last_ts, us * 1000);
+    else
+        pcap_timeval_usadd(&gap_last_ts, us);
+
+    header->ts = gap_last_ts;
+}
+
+uint16_t parse_eth(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf_pkthdr *header)
 {
     /*
      * Ethernet header (14 bytes)
@@ -1110,43 +1220,26 @@ uint16_t parse_ethernet(const uint8_t *pkt_data, uint8_t *new_pkt_data,
      * 2. source MAC (6 bytes)
      * 3. type (2 bytes)
      */
-    struct ether_header *eth_hdr;
-    uint16_t ether_type;
+    struct ethhdr *eth_hdr;
+    uint16_t eth_type;
     int i;
 
     /* do nothing if Ethernet hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN)
         return (0);
 
-    eth_hdr = (struct ether_header *)malloc(ETHER_HDR_LEN);
+    eth_hdr = (struct ethhdr *)malloc(ETH_HDR_LEN);
     if (eth_hdr == NULL)
         error("malloc(): cannot allocate memory for eth_hdr");
 
     /* copy Ethernet hdr from pkt_data into eth_hdr */
-    memcpy(eth_hdr, pkt_data, ETHER_HDR_LEN);
+    memcpy(eth_hdr, pkt_data, ETH_HDR_LEN);
 
     /* we are editing Ethernet hdr */
     if (header_opt == ETH)
-    {
-        /* overwrite destination MAC */
-        if (ethopt->ether_dhost_flag == 1) /* overwrite all destination MAC */
-            memcpy(eth_hdr->ether_dhost, ethopt->ether_old_dhost, ETHER_ADDR_LEN);
-        else if (ethopt->ether_dhost_flag == 2 && /* overwrite matching destination MAC only */
-                 memcmp(eth_hdr->ether_dhost, ethopt->ether_old_dhost, ETHER_ADDR_LEN) == 0)
-            memcpy(eth_hdr->ether_dhost, ethopt->ether_new_dhost, ETHER_ADDR_LEN);
+        update_eth_hdr(eth_hdr);
 
-        /* overwrite source MAC */
-        if (ethopt->ether_shost_flag == 1) /* overwrite all source MAC */
-            memcpy(eth_hdr->ether_shost, ethopt->ether_old_shost, ETHER_ADDR_LEN);
-        else if (ethopt->ether_shost_flag == 2 && /* overwrite matching source MAC only */
-                 memcmp(eth_hdr->ether_shost, ethopt->ether_old_shost, ETHER_ADDR_LEN) == 0)
-            memcpy(eth_hdr->ether_shost, ethopt->ether_new_shost, ETHER_ADDR_LEN);
-
-        /* overwrite Ethernet type */
-        if (ethopt->ether_type != 0)
-            eth_hdr->ether_type = htons(ethopt->ether_type);
-    }
-    ether_type = ntohs(eth_hdr->ether_type);
+    eth_type = ntohs(eth_hdr->eth_type);
 
     /*
      * go pass pcap hdr in new_pkt_data
@@ -1157,7 +1250,7 @@ uint16_t parse_ethernet(const uint8_t *pkt_data, uint8_t *new_pkt_data,
     while (i++ < PCAP_HDR_LEN)
         (void)*new_pkt_data++;
 
-    memcpy(new_pkt_data, eth_hdr, ETHER_HDR_LEN);
+    memcpy(new_pkt_data, eth_hdr, ETH_HDR_LEN);
     free(eth_hdr);
     eth_hdr = NULL;
 
@@ -1172,43 +1265,72 @@ uint16_t parse_ethernet(const uint8_t *pkt_data, uint8_t *new_pkt_data,
         if (header_opt == ETH && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN) > ETHER_MAX_LEN)
-                payload_len_opt -= (payload_len_opt + ETHER_HDR_LEN) - ETHER_MAX_LEN;
+            if ((payload_len_opt + ETH_HDR_LEN) > ETH_MAX_LEN)
+                payload_len_opt -= (payload_len_opt + ETH_HDR_LEN) - ETH_MAX_LEN;
             /*
              * go pass pcap hdr and Ethernet hdr in new_pkt_data
              * then copy payload_opt into new_pkt_data
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
                 (void)*new_pkt_data--;
 
-            header->caplen = header->len = ETHER_HDR_LEN + payload_len_opt;
+            header->caplen = header->len = ETH_HDR_LEN + payload_len_opt;
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN;
+            header->caplen = header->len = ETH_HDR_LEN;
 
         return (header->caplen);
     }
 
     /* parse ARP datagram */
-    if (ether_type == ETHERTYPE_ARP)
+    if (eth_type == ETH_TYPE_ARP)
         return (parse_arp(pkt_data, new_pkt_data, header));
     /* parse IP datagram */
-    else if (ether_type == ETHERTYPE_IP)
+    else if (eth_type == ETH_TYPE_IP)
         return (parse_ip(pkt_data, new_pkt_data, header, NULL, 0));
     /* parse IPv6 datagram */
-    else if (ether_type == ETHERTYPE_IPV6)
+    else if (eth_type == ETH_TYPE_IPV6)
         return (parse_ip6(pkt_data, new_pkt_data, header));
     /* no further editing support for other datagram */
     else
-        return (ETHER_HDR_LEN);
+        return (ETH_HDR_LEN);
+}
+
+void update_eth_hdr(struct ethhdr *eth_hdr)
+{
+    /* overwrite destination MAC */
+    if (ethopt->dhost.flag == FIELD_SET)
+        memcpy(eth_hdr->eth_dhost, ethopt->dhost.old, ETH_ADDR_LEN);
+    else if (ethopt->dhost.flag == FIELD_REPLACE &&
+             memcmp(eth_hdr->eth_dhost, ethopt->dhost.old, ETH_ADDR_LEN) == 0)
+        memcpy(eth_hdr->eth_dhost, ethopt->dhost.new, ETH_ADDR_LEN);
+    else if (ethopt->dhost.flag == FIELD_SET_RAND ||
+             (ethopt->dhost.flag == FIELD_REPLACE_RAND &&
+              memcmp(eth_hdr->eth_dhost, ethopt->dhost.old, ETH_ADDR_LEN) == 0))
+        set_random_eth_addr(eth_hdr->eth_dhost);
+
+    /* overwrite source MAC */
+    if (ethopt->shost.flag == FIELD_SET)
+        memcpy(eth_hdr->eth_shost, ethopt->shost.old, ETH_ADDR_LEN);
+    else if (ethopt->shost.flag == FIELD_REPLACE &&
+             memcmp(eth_hdr->eth_shost, ethopt->shost.old, ETH_ADDR_LEN) == 0)
+        memcpy(eth_hdr->eth_shost, ethopt->shost.new, ETH_ADDR_LEN);
+    else if (ethopt->shost.flag == FIELD_SET_RAND ||
+             (ethopt->shost.flag == FIELD_REPLACE_RAND &&
+              memcmp(eth_hdr->eth_shost, ethopt->shost.old, ETH_ADDR_LEN) == 0))
+        set_random_eth_addr(eth_hdr->eth_shost);
+
+    /* overwrite Ethernet type */
+    if (ethopt->eth_type != 0)
+        eth_hdr->eth_type = htons(ethopt->eth_type);
 }
 
 uint16_t parse_arp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf_pkthdr *header)
@@ -1229,12 +1351,12 @@ uint16_t parse_arp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     int i;
 
     /* do nothing if ARP hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + ARP_HDR_LEN)
-        return (ETHER_HDR_LEN);
+    if (header->caplen < ETH_HDR_LEN + ARP_HDR_LEN)
+        return (ETH_HDR_LEN);
 
     /* go pass Ethernet hdr in pkt_data */
     i = 0;
-    while (i++ < ETHER_HDR_LEN)
+    while (i++ < ETH_HDR_LEN)
         (void)*pkt_data++;
 
     arp_hdr = (struct arphdr *)malloc(ARP_HDR_LEN);
@@ -1246,52 +1368,20 @@ uint16_t parse_arp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
 
     /* reset pointer to the beginning of pkt_data */
     i = 0;
-    while (i++ < ETHER_HDR_LEN)
+    while (i++ < ETH_HDR_LEN)
         (void)*pkt_data--;
 
     /* do nothing if this is an unsupported ARP hdr */
-    if (arp_hdr->ar_hln != ETHER_ADDR_LEN || arp_hdr->ar_pln != IP_ADDR_LEN)
+    if (arp_hdr->ar_hln != ETH_ADDR_LEN || arp_hdr->ar_pln != IP_ADDR_LEN)
     {
         free(arp_hdr);
         arp_hdr = NULL;
-        return (ETHER_HDR_LEN);
+        return (ETH_HDR_LEN);
     }
 
     /* we are editing ARP hdr */
     if (header_opt == ARP)
-    {
-        /* overwrite opcode */
-        if (arpopt->ar_op_flag)
-            arp_hdr->ar_op = htons(arpopt->ar_op);
-
-        /* overwrite sender MAC */
-        if (arpopt->ar_sha_flag == 1) /* overwrite all sender MAC */
-            memcpy(arp_hdr->ar_sha, arpopt->ar_old_sha, ETHER_ADDR_LEN);
-        else if (arpopt->ar_sha_flag == 2 && /* overwrite matching sender MAC only */
-                 memcmp(arp_hdr->ar_sha, arpopt->ar_old_sha, ETHER_ADDR_LEN) == 0)
-            memcpy(arp_hdr->ar_sha, arpopt->ar_new_sha, ETHER_ADDR_LEN);
-
-        /* overwrite sender IP */
-        if (arpopt->ar_spa_flag == 1) /* overwrite all sender IP */
-            memcpy(arp_hdr->ar_spa, arpopt->ar_old_spa, IP_ADDR_LEN);
-        else if (arpopt->ar_spa_flag == 2 && /* overwrite matching IP only */
-                 memcmp(arp_hdr->ar_spa, arpopt->ar_old_spa, IP_ADDR_LEN) == 0)
-            memcpy(arp_hdr->ar_spa, arpopt->ar_new_spa, IP_ADDR_LEN);
-
-        /* overwrite target MAC */
-        if (arpopt->ar_tha_flag == 1) /* overwrite all target MAC */
-            memcpy(arp_hdr->ar_tha, arpopt->ar_old_tha, ETHER_ADDR_LEN);
-        else if (arpopt->ar_tha_flag == 2 && /* overwrite matching target MAC only */
-                 memcmp(arp_hdr->ar_tha, arpopt->ar_old_tha, ETHER_ADDR_LEN) == 0)
-            memcpy(arp_hdr->ar_tha, arpopt->ar_new_tha, ETHER_ADDR_LEN);
-
-        /* overwrite target IP */
-        if (arpopt->ar_tpa_flag == 1) /* overwrite all target IP */
-            memcpy(arp_hdr->ar_tpa, arpopt->ar_old_tpa, IP_ADDR_LEN);
-        else if (arpopt->ar_tpa_flag == 2 && /* overwrite matching IP only */
-                 memcmp(arp_hdr->ar_tpa, arpopt->ar_old_tpa, IP_ADDR_LEN) == 0)
-            memcpy(arp_hdr->ar_tpa, arpopt->ar_new_tpa, IP_ADDR_LEN);
-    }
+        update_arp_hdr(arp_hdr);
 
     /*
      * go pass pcap hdr and Ethernet hdr in new_pkt_data
@@ -1299,7 +1389,7 @@ uint16_t parse_arp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, arp_hdr, ARP_HDR_LEN);
@@ -1307,7 +1397,7 @@ uint16_t parse_arp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     arp_hdr = NULL;
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
         (void)*new_pkt_data--;
 
     /* copy up to layer 3 only, discard remaining data */
@@ -1317,33 +1407,76 @@ uint16_t parse_arp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
         if (header_opt == ARP && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN + ARP_HDR_LEN) > ETHER_MAX_LEN)
-                payload_len_opt -= (payload_len_opt + ETHER_HDR_LEN + ARP_HDR_LEN) - ETHER_MAX_LEN;
+            if ((payload_len_opt + ETH_HDR_LEN + ARP_HDR_LEN) > ETH_MAX_LEN)
+                payload_len_opt -= (payload_len_opt + ETH_HDR_LEN + ARP_HDR_LEN) - ETH_MAX_LEN;
             /*
              * go pass pcap hdr, Ethernet hdr and ARP hdr in new_pkt_data
              * then copy payload_opt into new_pkt_data
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ARP_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ARP_HDR_LEN)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ARP_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ARP_HDR_LEN)
                 (void)*new_pkt_data--;
 
-            header->caplen = header->len = ETHER_HDR_LEN + ARP_HDR_LEN + payload_len_opt;
+            header->caplen = header->len = ETH_HDR_LEN + ARP_HDR_LEN + payload_len_opt;
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN + ARP_HDR_LEN;
+            header->caplen = header->len = ETH_HDR_LEN + ARP_HDR_LEN;
 
         return (header->caplen);
     }
 
     /* no further editing support after ARP hdr */
-    return (ETHER_HDR_LEN + ARP_HDR_LEN);
+    return (ETH_HDR_LEN + ARP_HDR_LEN);
+}
+
+void update_arp_hdr(struct arphdr *arp_hdr)
+{
+    /* overwrite opcode */
+    if (arpopt->ar_op_flag)
+        arp_hdr->ar_op = htons(arpopt->ar_op);
+
+    /* overwrite sender MAC */
+    if (arpopt->sha.flag == FIELD_SET)
+        memcpy(arp_hdr->ar_sha, arpopt->sha.old, ETH_ADDR_LEN);
+    else if (arpopt->sha.flag == FIELD_REPLACE &&
+             memcmp(arp_hdr->ar_sha, arpopt->sha.old, ETH_ADDR_LEN) == 0)
+        memcpy(arp_hdr->ar_sha, arpopt->sha.new, ETH_ADDR_LEN);
+    else if (arpopt->sha.flag == FIELD_SET_RAND ||
+             (arpopt->sha.flag == FIELD_REPLACE_RAND &&
+              memcmp(arp_hdr->ar_sha, arpopt->sha.old, ETH_ADDR_LEN) == 0))
+        set_random_eth_addr(arp_hdr->ar_sha);
+
+    /* overwrite sender IP */
+    if (arpopt->ar_spa_flag == 1) /* overwrite all sender IP */
+        memcpy(arp_hdr->ar_spa, arpopt->ar_old_spa, IP_ADDR_LEN);
+    else if (arpopt->ar_spa_flag == 2 && /* overwrite matching IP only */
+             memcmp(arp_hdr->ar_spa, arpopt->ar_old_spa, IP_ADDR_LEN) == 0)
+        memcpy(arp_hdr->ar_spa, arpopt->ar_new_spa, IP_ADDR_LEN);
+
+    /* overwrite target MAC */
+    if (arpopt->tha.flag == FIELD_SET)
+        memcpy(arp_hdr->ar_tha, arpopt->tha.old, ETH_ADDR_LEN);
+    else if (arpopt->tha.flag == FIELD_REPLACE &&
+             memcmp(arp_hdr->ar_tha, arpopt->tha.old, ETH_ADDR_LEN) == 0)
+        memcpy(arp_hdr->ar_tha, arpopt->tha.new, ETH_ADDR_LEN);
+    else if (arpopt->tha.flag == FIELD_SET_RAND ||
+             (arpopt->tha.flag == FIELD_REPLACE_RAND &&
+              memcmp(arp_hdr->ar_tha, arpopt->tha.old, ETH_ADDR_LEN) == 0))
+        set_random_eth_addr(arp_hdr->ar_tha);
+
+    /* overwrite target IP */
+    if (arpopt->ar_tpa_flag == 1) /* overwrite all target IP */
+        memcpy(arp_hdr->ar_tpa, arpopt->ar_old_tpa, IP_ADDR_LEN);
+    else if (arpopt->ar_tpa_flag == 2 && /* overwrite matching IP only */
+             memcmp(arp_hdr->ar_tpa, arpopt->ar_old_tpa, IP_ADDR_LEN) == 0)
+        memcpy(arp_hdr->ar_tpa, arpopt->ar_new_tpa, IP_ADDR_LEN);
 }
 
 uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf_pkthdr *header,
@@ -1381,12 +1514,12 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
     if (flag == 0 && ip_hdr == NULL)
     {
         /* do nothing if IP hdr is truncated */
-        if (header->caplen < ETHER_HDR_LEN + IP_HDR_LEN)
-            return (ETHER_HDR_LEN);
+        if (header->caplen < ETH_HDR_LEN + IP_HDR_LEN)
+            return (ETH_HDR_LEN);
 
         /* go pass Ethernet hdr in pkt_data */
         i = 0;
-        while (i++ < ETHER_HDR_LEN)
+        while (i++ < ETH_HDR_LEN)
             (void)*pkt_data++;
 
         ip_hdr = (struct ip *)malloc(IP_HDR_LEN);
@@ -1403,16 +1536,16 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
     if (ip_hlb > IP_HDR_LEN)
     {
         /* do nothing if IP hdr with options is truncated */
-        if (header->caplen < ETHER_HDR_LEN + ip_hlb)
+        if (header->caplen < ETH_HDR_LEN + ip_hlb)
         {
             /* reset pointer to the beginning of pkt_data */
             i = 0;
-            while (i++ < ETHER_HDR_LEN)
+            while (i++ < ETH_HDR_LEN)
                 (void)*pkt_data--;
 
             free(ip_hdr);
             ip_hdr = NULL;
-            return (ETHER_HDR_LEN);
+            return (ETH_HDR_LEN);
         }
 
         ip_o = (uint8_t *)malloc(sizeof(uint8_t) * (ip_hlb - IP_HDR_LEN));
@@ -1428,7 +1561,7 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
     {
         /* reset pointer to the beginning of pkt_data */
         i = 0;
-        while (i++ < ETHER_HDR_LEN)
+        while (i++ < ETH_HDR_LEN)
             (void)*pkt_data--;
 
         /* we are editing IP hdr */
@@ -1456,8 +1589,8 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
             if (header_opt == IP && payload_len_opt > 0)
             {
                 /* truncate payload if it is too large */
-                if ((payload_len_opt + ETHER_HDR_LEN + ip_hlb) > ETHER_MAX_LEN)
-                    payload_len_opt -= (payload_len_opt + ETHER_HDR_LEN + ip_hlb) - ETHER_MAX_LEN;
+                if ((payload_len_opt + ETH_HDR_LEN + ip_hlb) > ETH_MAX_LEN)
+                    payload_len_opt -= (payload_len_opt + ETH_HDR_LEN + ip_hlb) - ETH_MAX_LEN;
                 ip_hdr->ip_len = htons(ip_hlb + payload_len_opt);
             }
             else
@@ -1475,7 +1608,7 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, ip_hdr, IP_HDR_LEN);
@@ -1497,7 +1630,7 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
     }
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
         (void)*new_pkt_data--;
 
     if (flag == 0)
@@ -1514,16 +1647,16 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
                  * and reset pointer to the beginning of new_pkt_data
                  */
                 i = 0;
-                while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+                while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
                     (void)*new_pkt_data++;
 
                 memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
                 i = 0;
-                while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+                while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
                     (void)*new_pkt_data--;
 
-                header->caplen = header->len = ETHER_HDR_LEN + ip_hlb + payload_len_opt;
+                header->caplen = header->len = ETH_HDR_LEN + ip_hlb + payload_len_opt;
 
                 /*
                  * if payload is specified and it applies to ICMP, TCP, or UDP hdr + data,
@@ -1544,7 +1677,7 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
                 }
             }
             else
-                header->caplen = header->len = ETHER_HDR_LEN + ip_hlb;
+                header->caplen = header->len = ETH_HDR_LEN + ip_hlb;
 
             free(ip_hdr);
             ip_hdr = NULL;
@@ -1567,7 +1700,7 @@ uint16_t parse_ip(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf
 
         /* no further editing support for other datagram or fragmented packet */
         free(ip_hdr);
-        return (ETHER_HDR_LEN + ip_hlb);
+        return (ETH_HDR_LEN + ip_hlb);
     }
     return (0); /* flag is 1 */
 }
@@ -1675,18 +1808,26 @@ void update_ip_hdr(struct ip *ip_hdr, uint8_t *r, uint8_t *d, uint8_t *m)
         ip_hdr->ip_p = get_random_number(UINT8_MAX);
 
     /* overwrite source IP */
-    if (ipopt->ip_src_flag == 1) /* overwrite all source IP */
-        memcpy(&ip_hdr->ip_src, &ipopt->ip_old_src, sizeof(struct in_addr));
-    else if (ipopt->ip_src_flag == 2 && /* overwrite matching IP only */
-             memcmp(&ip_hdr->ip_src, &ipopt->ip_old_src, sizeof(struct in_addr)) == 0)
-        memcpy(&ip_hdr->ip_src, &ipopt->ip_new_src, sizeof(struct in_addr));
+    if (ipopt->ip_src.flag == FIELD_SET)
+        memcpy(&ip_hdr->ip_src, &ipopt->ip_src.old, sizeof(struct in_addr));
+    else if (ipopt->ip_src.flag == FIELD_REPLACE &&
+             memcmp(&ip_hdr->ip_src, &ipopt->ip_src.old, sizeof(struct in_addr)) == 0)
+        memcpy(&ip_hdr->ip_src, &ipopt->ip_src.new, sizeof(struct in_addr));
+    else if (ipopt->ip_src.flag == FIELD_SET_RAND ||
+             (ipopt->ip_src.flag == FIELD_REPLACE_RAND &&
+              memcmp(&ip_hdr->ip_src, &ipopt->ip_src.old, sizeof(struct in_addr)) == 0))
+        set_random_in_addr(&ip_hdr->ip_src, &ipopt->ip_src);
 
     /* overwrite destination IP */
-    if (ipopt->ip_dst_flag == 1) /* overwrite all destination IP */
-        memcpy(&ip_hdr->ip_dst, &ipopt->ip_old_dst, sizeof(struct in_addr));
-    else if (ipopt->ip_dst_flag == 2 && /* overwrite matching IP only */
-             memcmp(&ip_hdr->ip_dst, &ipopt->ip_old_dst, sizeof(struct in_addr)) == 0)
-        memcpy(&ip_hdr->ip_dst, &ipopt->ip_new_dst, sizeof(struct in_addr));
+    if (ipopt->ip_dst.flag == FIELD_SET)
+        memcpy(&ip_hdr->ip_dst, &ipopt->ip_dst.old, sizeof(struct in_addr));
+    else if (ipopt->ip_dst.flag == FIELD_REPLACE &&
+             memcmp(&ip_hdr->ip_dst, &ipopt->ip_dst.old, sizeof(struct in_addr)) == 0)
+        memcpy(&ip_hdr->ip_dst, &ipopt->ip_dst.new, sizeof(struct in_addr));
+    else if (ipopt->ip_dst.flag == FIELD_SET_RAND ||
+             (ipopt->ip_dst.flag == FIELD_REPLACE_RAND &&
+              memcmp(&ip_hdr->ip_dst, &ipopt->ip_dst.old, sizeof(struct in_addr)) == 0))
+        set_random_in_addr(&ip_hdr->ip_dst, &ipopt->ip_dst);
 }
 
 uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_sf_pkthdr *header)
@@ -1707,12 +1848,12 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     int i;
 
     /* do nothing if IPv6 hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + IP6_HDR_LEN)
-        return (ETHER_HDR_LEN);
+    if (header->caplen < ETH_HDR_LEN + IP6_HDR_LEN)
+        return (ETH_HDR_LEN);
 
     /* go pass Ethernet hdr in pkt_data */
     i = 0;
-    while (i++ < ETHER_HDR_LEN)
+    while (i++ < ETH_HDR_LEN)
         (void)*pkt_data++;
 
     ip6_hdr = (struct ip6 *)malloc(sizeof(struct ip6));
@@ -1724,7 +1865,7 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
 
     /* reset pointer to the beginning of pkt_data */
     i = 0;
-    while (i++ < ETHER_HDR_LEN)
+    while (i++ < ETH_HDR_LEN)
         (void)*pkt_data--;
 
     /* do nothing if next hdr is unsupported */
@@ -1733,7 +1874,7 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     {
         free(ip6_hdr);
         ip6_hdr = NULL;
-        return (ETHER_HDR_LEN);
+        return (ETH_HDR_LEN);
     }
 
     /* we are editing IPv6 hdr */
@@ -1747,8 +1888,8 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
         if (header_opt == IP6 && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN) > ETHER_MAX_LEN)
-                payload_len_opt -= (payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN) - ETHER_MAX_LEN;
+            if ((payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN) > ETH_MAX_LEN)
+                payload_len_opt -= (payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN) - ETH_MAX_LEN;
             ip6_hdr->ip6_plen = htons(payload_len_opt);
         }
         else
@@ -1769,16 +1910,16 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
                 (void)*new_pkt_data--;
 
-            header->caplen = header->len = ETHER_HDR_LEN + IP6_HDR_LEN + payload_len_opt;
+            header->caplen = header->len = ETH_HDR_LEN + IP6_HDR_LEN + payload_len_opt;
 
             /*
              * if payload is specified and it applies to ICMPv6, TCP, or UDP hdr + data,
@@ -1798,7 +1939,7 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
             }
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN + IP6_HDR_LEN;
+            header->caplen = header->len = ETH_HDR_LEN + IP6_HDR_LEN;
 
         free(ip6_hdr);
         ip6_hdr = NULL;
@@ -1818,7 +1959,7 @@ uint16_t parse_ip6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     /* no further editing support for other datagram */
     free(ip6_hdr);
     ip6_hdr = NULL;
-    return (ETHER_HDR_LEN + IP6_HDR_LEN);
+    return (ETH_HDR_LEN + IP6_HDR_LEN);
 }
 
 void update_ip6_hdr(struct ip6 *ip6_hdr)
@@ -1864,18 +2005,26 @@ void update_ip6_hdr(struct ip6 *ip6_hdr)
         ip6_hdr->ip6_hlim = get_random_number(UINT8_MAX);
 
     /* overwrite source IP */
-    if (ip6opt->ip6_src_flag == 1) /* overwrite all source IP */
-        memcpy(&ip6_hdr->ip6_src, &ip6opt->ip6_old_src, sizeof(struct in6_addr));
-    else if (ip6opt->ip6_src_flag == 2 && /* overwrite matching IP only */
-             memcmp(&ip6_hdr->ip6_src, &ip6opt->ip6_old_src, sizeof(struct in6_addr)) == 0)
-        memcpy(&ip6_hdr->ip6_src, &ip6opt->ip6_new_src, sizeof(struct in6_addr));
+    if (ip6opt->ip6_src.flag == FIELD_SET)
+        memcpy(&ip6_hdr->ip6_src, &ip6opt->ip6_src.old, sizeof(struct in6_addr));
+    else if (ip6opt->ip6_src.flag == FIELD_REPLACE &&
+             memcmp(&ip6_hdr->ip6_src, &ip6opt->ip6_src.old, sizeof(struct in6_addr)) == 0)
+        memcpy(&ip6_hdr->ip6_src, &ip6opt->ip6_src.new, sizeof(struct in6_addr));
+    else if (ip6opt->ip6_src.flag == FIELD_SET_RAND ||
+             (ip6opt->ip6_src.flag == FIELD_REPLACE_RAND &&
+              memcmp(&ip6_hdr->ip6_src, &ip6opt->ip6_src.old, sizeof(struct in6_addr)) == 0))
+        set_random_in6_addr(&ip6_hdr->ip6_src, &ip6opt->ip6_src);
 
     /* overwrite destination IP */
-    if (ip6opt->ip6_dst_flag == 1) /* overwrite all destination IP */
-        memcpy(&ip6_hdr->ip6_dst, &ip6opt->ip6_old_dst, sizeof(struct in6_addr));
-    else if (ip6opt->ip6_dst_flag == 2 && /* overwrite matching IP only */
-             memcmp(&ip6_hdr->ip6_dst, &ip6opt->ip6_old_dst, sizeof(struct in6_addr)) == 0)
-        memcpy(&ip6_hdr->ip6_dst, &ip6opt->ip6_new_dst, sizeof(struct in6_addr));
+    if (ip6opt->ip6_dst.flag == FIELD_SET)
+        memcpy(&ip6_hdr->ip6_dst, &ip6opt->ip6_dst.old, sizeof(struct in6_addr));
+    else if (ip6opt->ip6_dst.flag == FIELD_REPLACE &&
+             memcmp(&ip6_hdr->ip6_dst, &ip6opt->ip6_dst.old, sizeof(struct in6_addr)) == 0)
+        memcpy(&ip6_hdr->ip6_dst, &ip6opt->ip6_dst.new, sizeof(struct in6_addr));
+    else if (ip6opt->ip6_dst.flag == FIELD_SET_RAND ||
+             (ip6opt->ip6_dst.flag == FIELD_REPLACE_RAND &&
+              memcmp(&ip6_hdr->ip6_dst, &ip6opt->ip6_dst.old, sizeof(struct in6_addr)) == 0))
+        set_random_in6_addr(&ip6_hdr->ip6_dst, &ip6opt->ip6_dst);
 }
 
 void write_ip6_hdr(uint8_t *new_pkt_data, struct ip6 *ip6_hdr)
@@ -1888,13 +2037,13 @@ void write_ip6_hdr(uint8_t *new_pkt_data, struct ip6 *ip6_hdr)
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, ip6_hdr, IP6_HDR_LEN);
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN)
         (void)*new_pkt_data--;
 }
 
@@ -1915,11 +2064,11 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     ip_hlb = ip_hdr->ip_hl * 4; /* convert to bytes */
 
     /* do nothing if ICMP hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN)
     {
         free(ip_hdr);
         ip_hdr = NULL;
-        return (ETHER_HDR_LEN + ip_hlb);
+        return (ETH_HDR_LEN + ip_hlb);
     }
 
     icmp_hdr = (struct icmphdr *)malloc(ICMP_HDR_LEN);
@@ -1938,13 +2087,13 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
          * and reset pointer to the beginning of new_pkt_data
          */
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
             (void)*new_pkt_data++;
 
         memcpy(icmp_hdr, new_pkt_data, ICMP_HDR_LEN);
 
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
             (void)*new_pkt_data--;
     }
     else
@@ -1955,13 +2104,13 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
          * and reset pointer to the beginning of pkt_data
          */
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + ip_hlb))
+        while (i++ < (ETH_HDR_LEN + ip_hlb))
             (void)*pkt_data++;
 
         memcpy(icmp_hdr, pkt_data, ICMP_HDR_LEN);
 
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + ip_hlb))
+        while (i++ < (ETH_HDR_LEN + ip_hlb))
             (void)*pkt_data--;
 
         /* we are editing ICMP hdr */
@@ -1986,9 +2135,9 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
             if (header_opt == ICMP && payload_len_opt > 0)
             {
                 /* truncate payload if it is too large */
-                if ((payload_len_opt + ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN) > ETHER_MAX_LEN)
+                if ((payload_len_opt + ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN) > ETH_MAX_LEN)
                     payload_len_opt -=
-                        (payload_len_opt + ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN) - ETHER_MAX_LEN;
+                        (payload_len_opt + ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN) - ETH_MAX_LEN;
 
                 /*
                  * go pass pcap hdr, Ethernet hdr, IP hdr and ICMP hdr in new_pkt_data
@@ -1996,27 +2145,27 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
                  * and reset pointer to the beginning of new_pkt_data
                  */
                 i = 0;
-                while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN)
+                while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN)
                     (void)*new_pkt_data++;
 
                 memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
                 i = 0;
-                while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN)
+                while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN)
                     (void)*new_pkt_data--;
 
                 header->caplen = header->len =
-                    ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN + payload_len_opt;
+                    ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN + payload_len_opt;
             }
             else
-                header->caplen = header->len = ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN;
+                header->caplen = header->len = ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN;
 
             /* update IP total length */
-            ip_hdr->ip_len = htons(header->caplen - ETHER_HDR_LEN);
+            ip_hdr->ip_len = htons(header->caplen - ETH_HDR_LEN);
 
             /* go pass Ethernet hdr in pkt_data */
             i = 0;
-            while (i++ < ETHER_HDR_LEN)
+            while (i++ < ETH_HDR_LEN)
                 (void)*pkt_data++;
 
             /*
@@ -2028,7 +2177,7 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
 
             /* reset pointer to the beginning of pkt_data */
             i = 0;
-            while (i++ < ETHER_HDR_LEN)
+            while (i++ < ETH_HDR_LEN)
                 (void)*pkt_data--;
         }
     }
@@ -2040,7 +2189,7 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
      * recalculate checksum for ICMP hdr (cover ICMP hdr + trailing data)
      * if we have enough data
      */
-    if (csum_opt && ip_fo == 0 && header->caplen >= (ETHER_HDR_LEN + ntohs(ip_hdr->ip_len)))
+    if (csum_opt && ip_fo == 0 && header->caplen >= (ETH_HDR_LEN + ntohs(ip_hdr->ip_len)))
         update_icmp_cksum(pkt_data, ip_hdr, icmp_hdr, &ip_hlb);
 
     free(ip_hdr);
@@ -2052,7 +2201,7 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, icmp_hdr, ICMP_HDR_LEN);
@@ -2060,7 +2209,7 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     icmp_hdr = NULL;
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
         (void)*new_pkt_data--;
 
     /* no further editing support after ICMP hdr */
@@ -2074,7 +2223,7 @@ uint16_t parse_icmp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     else if (layer_opt == 3)
         return (header->caplen);
     else
-        return (ETHER_HDR_LEN + ip_hlb + ICMP_HDR_LEN);
+        return (ETH_HDR_LEN + ip_hlb + ICMP_HDR_LEN);
 }
 
 void update_icmp_cksum(const uint8_t *pkt_data, struct ip *ip_hdr, struct icmphdr *icmp_hdr,
@@ -2113,7 +2262,7 @@ void update_icmp_cksum(const uint8_t *pkt_data, struct ip *ip_hdr, struct icmphd
     else
     {
         for (i = ICMP_HDR_LEN; i < icmpp_len; i++)
-            icmpp[i] = pkt_data[ETHER_HDR_LEN + *ip_hlb + i];
+            icmpp[i] = pkt_data[ETH_HDR_LEN + *ip_hlb + i];
     }
 
     /* recalculate checksum */
@@ -2136,11 +2285,11 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
     int i;
 
     /* do nothing if ICMPv6 hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN)
     {
         free(ip6_hdr);
         ip6_hdr = NULL;
-        return (ETHER_HDR_LEN + IP6_HDR_LEN);
+        return (ETH_HDR_LEN + IP6_HDR_LEN);
     }
 
     icmp6_hdr = (struct icmp6hdr *)malloc(ICMP6_HDR_LEN);
@@ -2159,13 +2308,13 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
          * and reset pointer to the beginning of new_pkt_data
          */
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
             (void)*new_pkt_data++;
 
         memcpy(icmp6_hdr, new_pkt_data, ICMP6_HDR_LEN);
 
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
             (void)*new_pkt_data--;
     }
     else
@@ -2176,13 +2325,13 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
          * and reset pointer to the beginning of pkt_data
          */
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + IP6_HDR_LEN))
+        while (i++ < (ETH_HDR_LEN + IP6_HDR_LEN))
             (void)*pkt_data++;
 
         memcpy(icmp6_hdr, pkt_data, ICMP6_HDR_LEN);
 
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + IP6_HDR_LEN))
+        while (i++ < (ETH_HDR_LEN + IP6_HDR_LEN))
             (void)*pkt_data--;
 
         /* we are editing ICMPv6 hdr */
@@ -2207,10 +2356,9 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
             if (header_opt == ICMP6 && payload_len_opt > 0)
             {
                 /* truncate payload if it is too large */
-                if ((payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN) > ETHER_MAX_LEN)
+                if ((payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN) > ETH_MAX_LEN)
                     payload_len_opt -=
-                        (payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN) -
-                        ETHER_MAX_LEN;
+                        (payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN) - ETH_MAX_LEN;
 
                 /*
                  * go pass pcap hdr, Ethernet hdr, IPv6 hdr and ICMPv6 hdr in new_pkt_data
@@ -2218,23 +2366,23 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
                  * and reset pointer to the beginning of new_pkt_data
                  */
                 i = 0;
-                while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN)
+                while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN)
                     (void)*new_pkt_data++;
 
                 memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
                 i = 0;
-                while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN)
+                while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN)
                     (void)*new_pkt_data--;
 
                 header->caplen = header->len =
-                    ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN + payload_len_opt;
+                    ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN + payload_len_opt;
             }
             else
-                header->caplen = header->len = ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN;
+                header->caplen = header->len = ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN;
 
             /* update IPv6 payload length */
-            ip6_hdr->ip6_plen = htons(header->caplen - ETHER_HDR_LEN);
+            ip6_hdr->ip6_plen = htons(header->caplen - ETH_HDR_LEN);
             write_ip6_hdr(new_pkt_data, ip6_hdr);
         }
     }
@@ -2243,7 +2391,7 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
      * recalculate checksum for ICMPv6 hdr (cover IPv6 pseudo hdr + ICMPv6 hdr + trailing data)
      * if we have enough data
      */
-    if (csum_opt && header->caplen >= (ETHER_HDR_LEN + IP6_HDR_LEN + ntohs(ip6_hdr->ip6_plen)))
+    if (csum_opt && header->caplen >= (ETH_HDR_LEN + IP6_HDR_LEN + ntohs(ip6_hdr->ip6_plen)))
         update_icmp6_cksum(pkt_data, ip6_hdr, icmp6_hdr);
 
     free(ip6_hdr);
@@ -2255,7 +2403,7 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, icmp6_hdr, ICMP6_HDR_LEN);
@@ -2263,7 +2411,7 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
     icmp6_hdr = NULL;
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
         (void)*new_pkt_data--;
 
     /* no further editing support after ICMPv6 hdr */
@@ -2277,7 +2425,7 @@ uint16_t parse_icmp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap
     else if (layer_opt == 3)
         return (header->caplen);
     else
-        return (ETHER_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN);
+        return (ETH_HDR_LEN + IP6_HDR_LEN + ICMP6_HDR_LEN);
 }
 
 void update_icmp6_cksum(const uint8_t *pkt_data, struct ip6 *ip6_hdr, struct icmp6hdr *icmp6_hdr)
@@ -2334,7 +2482,7 @@ void update_icmp6_cksum(const uint8_t *pkt_data, struct ip6 *ip6_hdr, struct icm
     else
     {
         for (i = ICMP6_HDR_LEN; i < (icmp6p_len - sizeof(struct ip6pseudo)); i++)
-            icmp6p[i + sizeof(struct ip6pseudo)] = pkt_data[ETHER_HDR_LEN + IP6_HDR_LEN + i];
+            icmp6p[i + sizeof(struct ip6pseudo)] = pkt_data[ETH_HDR_LEN + IP6_HDR_LEN + i];
     }
 
     /* recalculate checksum */
@@ -2371,11 +2519,11 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     ip_hlb = ip_hdr->ip_hl * 4; /* convert to bytes */
 
     /* do nothing if TCP hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + ip_hlb + TCP_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN + ip_hlb + TCP_HDR_LEN)
     {
         free(ip_hdr);
         ip_hdr = NULL;
-        return (ETHER_HDR_LEN + ip_hlb);
+        return (ETH_HDR_LEN + ip_hlb);
     }
 
     tcp_hdr = (struct tcphdr *)malloc(TCP_HDR_LEN);
@@ -2394,13 +2542,13 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
          * and reset pointer to the beginning of new_pkt_data
          */
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
             (void)*new_pkt_data++;
 
         memcpy(tcp_hdr, new_pkt_data, TCP_HDR_LEN);
 
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
             (void)*new_pkt_data--;
     }
     else
@@ -2411,13 +2559,13 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
          * and reset pointer to the beginning of pkt_data
          */
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + ip_hlb))
+        while (i++ < (ETH_HDR_LEN + ip_hlb))
             (void)*pkt_data++;
 
         memcpy(tcp_hdr, pkt_data, TCP_HDR_LEN);
 
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + ip_hlb))
+        while (i++ < (ETH_HDR_LEN + ip_hlb))
             (void)*pkt_data--;
     }
 
@@ -2427,13 +2575,13 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     if (tcp_hlb > TCP_HDR_LEN)
     {
         /* do nothing if TCP hdr with options is truncated */
-        if (header->caplen < (ETHER_HDR_LEN + ip_hlb + tcp_hlb))
+        if (header->caplen < (ETH_HDR_LEN + ip_hlb + tcp_hlb))
         {
             free(ip_hdr);
             ip_hdr = NULL;
             free(tcp_hdr);
             tcp_hdr = NULL;
-            return (ETHER_HDR_LEN + ip_hlb);
+            return (ETH_HDR_LEN + ip_hlb);
         }
 
         tcp_o = (uint8_t *)malloc(sizeof(uint8_t) * (tcp_hlb - TCP_HDR_LEN));
@@ -2444,13 +2592,13 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
         {
             /* copy TCP options from new_pkt_data into tcp_o */
             for (i = 0, j = TCP_HDR_LEN; i < (tcp_hlb - TCP_HDR_LEN); i++, j++)
-                tcp_o[i] = new_pkt_data[PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + j];
+                tcp_o[i] = new_pkt_data[PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + j];
         }
         else
         {
             /* copy TCP options from pkt_data into tcp_o */
             for (i = 0, j = TCP_HDR_LEN; i < (tcp_hlb - TCP_HDR_LEN); i++, j++)
-                tcp_o[i] = pkt_data[ETHER_HDR_LEN + ip_hlb + j];
+                tcp_o[i] = pkt_data[ETH_HDR_LEN + ip_hlb + j];
         }
     }
 
@@ -2468,9 +2616,8 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
         if (header_opt == TCP && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN + ip_hlb + tcp_hlb) > ETHER_MAX_LEN)
-                payload_len_opt -=
-                    (payload_len_opt + ETHER_HDR_LEN + ip_hlb + tcp_hlb) - ETHER_MAX_LEN;
+            if ((payload_len_opt + ETH_HDR_LEN + ip_hlb + tcp_hlb) > ETH_MAX_LEN)
+                payload_len_opt -= (payload_len_opt + ETH_HDR_LEN + ip_hlb + tcp_hlb) - ETH_MAX_LEN;
 
             /*
              * go pass pcap hdr, Ethernet hdr, IP hdr and TCP hdr in new_pkt_data
@@ -2478,26 +2625,26 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + tcp_hlb)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + tcp_hlb)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + tcp_hlb)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + tcp_hlb)
                 (void)*new_pkt_data--;
 
-            header->caplen = header->len = ETHER_HDR_LEN + ip_hlb + tcp_hlb + payload_len_opt;
+            header->caplen = header->len = ETH_HDR_LEN + ip_hlb + tcp_hlb + payload_len_opt;
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN + ip_hlb + tcp_hlb;
+            header->caplen = header->len = ETH_HDR_LEN + ip_hlb + tcp_hlb;
 
         /* update IP total length */
-        ip_hdr->ip_len = htons(header->caplen - ETHER_HDR_LEN);
+        ip_hdr->ip_len = htons(header->caplen - ETH_HDR_LEN);
 
         /* go pass Ethernet hdr in pkt_data */
         i = 0;
-        while (i++ < ETHER_HDR_LEN)
+        while (i++ < ETH_HDR_LEN)
             (void)*pkt_data++;
 
         /*
@@ -2509,7 +2656,7 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
 
         /* reset pointer to the beginning of pkt_data */
         i = 0;
-        while (i++ < ETHER_HDR_LEN)
+        while (i++ < ETH_HDR_LEN)
             (void)*pkt_data--;
     }
 
@@ -2520,7 +2667,7 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
      * recalculate checksum for TCP hdr (cover IP pseudo hdr + TCP hdr + trailing data)
      * if we have enough data
      */
-    if (csum_opt && ip_fo == 0 && header->caplen >= (ETHER_HDR_LEN + ntohs(ip_hdr->ip_len)))
+    if (csum_opt && ip_fo == 0 && header->caplen >= (ETH_HDR_LEN + ntohs(ip_hdr->ip_len)))
         update_tcp_cksum(pkt_data, ip_hdr, tcp_hdr, &ip_hlb, &tcp_hlb, tcp_o);
 
     free(ip_hdr);
@@ -2532,7 +2679,7 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, tcp_hdr, TCP_HDR_LEN);
@@ -2556,7 +2703,7 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     }
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
         (void)*new_pkt_data--;
 
     /* no further editing support after TCP hdr */
@@ -2570,7 +2717,7 @@ uint16_t parse_tcp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     else if (layer_opt == 3)
         return (header->caplen);
     else
-        return (ETHER_HDR_LEN + ip_hlb + tcp_hlb);
+        return (ETH_HDR_LEN + ip_hlb + tcp_hlb);
 }
 
 void update_tcp_cksum(const uint8_t *pkt_data, struct ip *ip_hdr, struct tcphdr *tcp_hdr,
@@ -2647,7 +2794,7 @@ void update_tcp_cksum(const uint8_t *pkt_data, struct ip *ip_hdr, struct tcphdr 
     else
     {
         for (i = *tcp_hlb; i < (tcpp_len - sizeof(struct ippseudo)); i++)
-            tcpp[i + sizeof(struct ippseudo)] = pkt_data[ETHER_HDR_LEN + *ip_hlb + i];
+            tcpp[i + sizeof(struct ippseudo)] = pkt_data[ETH_HDR_LEN + *ip_hlb + i];
     }
 
     /* recalculate checksum */
@@ -2680,11 +2827,11 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     int i, j;
 
     /* do nothing if TCP hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + IP6_HDR_LEN + TCP_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN + IP6_HDR_LEN + TCP_HDR_LEN)
     {
         free(ip6_hdr);
         ip6_hdr = NULL;
-        return (ETHER_HDR_LEN + IP6_HDR_LEN);
+        return (ETH_HDR_LEN + IP6_HDR_LEN);
     }
 
     tcp_hdr = (struct tcphdr *)malloc(TCP_HDR_LEN);
@@ -2703,13 +2850,13 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
          * and reset pointer to the beginning of new_pkt_data
          */
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
             (void)*new_pkt_data++;
 
         memcpy(tcp_hdr, new_pkt_data, TCP_HDR_LEN);
 
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
             (void)*new_pkt_data--;
     }
     else
@@ -2720,13 +2867,13 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
          * and reset pointer to the beginning of pkt_data
          */
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + IP6_HDR_LEN))
+        while (i++ < (ETH_HDR_LEN + IP6_HDR_LEN))
             (void)*pkt_data++;
 
         memcpy(tcp_hdr, pkt_data, TCP_HDR_LEN);
 
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + IP6_HDR_LEN))
+        while (i++ < (ETH_HDR_LEN + IP6_HDR_LEN))
             (void)*pkt_data--;
     }
 
@@ -2736,13 +2883,13 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     if (tcp_hlb > TCP_HDR_LEN)
     {
         /* do nothing if TCP hdr with options is truncated */
-        if (header->caplen < (ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb))
+        if (header->caplen < (ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb))
         {
             free(ip6_hdr);
             ip6_hdr = NULL;
             free(tcp_hdr);
             tcp_hdr = NULL;
-            return (ETHER_HDR_LEN + IP6_HDR_LEN);
+            return (ETH_HDR_LEN + IP6_HDR_LEN);
         }
 
         tcp_o = (uint8_t *)malloc(sizeof(uint8_t) * (tcp_hlb - TCP_HDR_LEN));
@@ -2753,13 +2900,13 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
         {
             /* copy TCP options from new_pkt_data into tcp_o */
             for (i = 0, j = TCP_HDR_LEN; i < (tcp_hlb - TCP_HDR_LEN); i++, j++)
-                tcp_o[i] = new_pkt_data[PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + j];
+                tcp_o[i] = new_pkt_data[PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + j];
         }
         else
         {
             /* copy TCP options from pkt_data into tcp_o */
             for (i = 0, j = TCP_HDR_LEN; i < (tcp_hlb - TCP_HDR_LEN); i++, j++)
-                tcp_o[i] = pkt_data[ETHER_HDR_LEN + IP6_HDR_LEN + j];
+                tcp_o[i] = pkt_data[ETH_HDR_LEN + IP6_HDR_LEN + j];
         }
     }
 
@@ -2777,9 +2924,9 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
         if (header_opt == TCP && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb) > ETHER_MAX_LEN)
+            if ((payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb) > ETH_MAX_LEN)
                 payload_len_opt -=
-                    (payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb) - ETHER_MAX_LEN;
+                    (payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb) - ETH_MAX_LEN;
 
             /*
              * go pass pcap hdr, Ethernet hdr, IPv6 hdr and TCP hdr in new_pkt_data
@@ -2787,22 +2934,22 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb)
                 (void)*new_pkt_data--;
 
-            header->caplen = header->len = ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb + payload_len_opt;
+            header->caplen = header->len = ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb + payload_len_opt;
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb;
+            header->caplen = header->len = ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb;
 
         /* update IPv6 payload length */
-        ip6_hdr->ip6_plen = htons(header->caplen - (ETHER_HDR_LEN + IP6_HDR_LEN));
+        ip6_hdr->ip6_plen = htons(header->caplen - (ETH_HDR_LEN + IP6_HDR_LEN));
         write_ip6_hdr(new_pkt_data, ip6_hdr);
     }
 
@@ -2810,7 +2957,7 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
      * recalculate checksum for TCP hdr (cover IPv6 pseudo hdr + TCP hdr + trailing data)
      * if we have enough data
      */
-    if (csum_opt && header->caplen >= (ETHER_HDR_LEN + IP6_HDR_LEN + ntohs(ip6_hdr->ip6_plen)))
+    if (csum_opt && header->caplen >= (ETH_HDR_LEN + IP6_HDR_LEN + ntohs(ip6_hdr->ip6_plen)))
         update_tcp6_cksum(pkt_data, ip6_hdr, tcp_hdr, &tcp_hlb, tcp_o);
 
     free(ip6_hdr);
@@ -2822,7 +2969,7 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, tcp_hdr, TCP_HDR_LEN);
@@ -2846,7 +2993,7 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     }
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
         (void)*new_pkt_data--;
 
     /* no further editing support after TCP hdr */
@@ -2860,7 +3007,7 @@ uint16_t parse_tcp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     else if (layer_opt == 3)
         return (header->caplen);
     else
-        return (ETHER_HDR_LEN + IP6_HDR_LEN + tcp_hlb);
+        return (ETH_HDR_LEN + IP6_HDR_LEN + tcp_hlb);
 }
 
 void update_tcp6_cksum(const uint8_t *pkt_data, struct ip6 *ip6_hdr, struct tcphdr *tcp_hdr,
@@ -2937,7 +3084,7 @@ void update_tcp6_cksum(const uint8_t *pkt_data, struct ip6 *ip6_hdr, struct tcph
     else
     {
         for (i = *tcp_hlb; i < (tcpp_len - sizeof(struct ip6pseudo)); i++)
-            tcpp[i + sizeof(struct ip6pseudo)] = pkt_data[ETHER_HDR_LEN + IP6_HDR_LEN + i];
+            tcpp[i + sizeof(struct ip6pseudo)] = pkt_data[ETH_HDR_LEN + IP6_HDR_LEN + i];
     }
 
     /* recalculate checksum */
@@ -3025,11 +3172,11 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     ip_hlb = ip_hdr->ip_hl * 4; /* convert to bytes */
 
     /* do nothing if UDP hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN)
     {
         free(ip_hdr);
         ip_hdr = NULL;
-        return (ETHER_HDR_LEN + ip_hlb);
+        return (ETH_HDR_LEN + ip_hlb);
     }
 
     udp_hdr = (struct udphdr *)malloc(UDP_HDR_LEN);
@@ -3048,13 +3195,13 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
          * and reset pointer to the beginning of new_pkt_data
          */
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
             (void)*new_pkt_data++;
 
         memcpy(udp_hdr, new_pkt_data, UDP_HDR_LEN);
 
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
             (void)*new_pkt_data--;
     }
     else
@@ -3065,13 +3212,13 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
          * and reset pointer to the beginning of pkt_data
          */
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + ip_hlb))
+        while (i++ < (ETH_HDR_LEN + ip_hlb))
             (void)*pkt_data++;
 
         memcpy(udp_hdr, pkt_data, UDP_HDR_LEN);
 
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + ip_hlb))
+        while (i++ < (ETH_HDR_LEN + ip_hlb))
             (void)*pkt_data--;
     }
 
@@ -3089,9 +3236,9 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
         if (header_opt == UDP && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN) > ETHER_MAX_LEN)
+            if ((payload_len_opt + ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN) > ETH_MAX_LEN)
                 payload_len_opt -=
-                    (payload_len_opt + ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN) - ETHER_MAX_LEN;
+                    (payload_len_opt + ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN) - ETH_MAX_LEN;
 
             /*
              * go pass pcap hdr, Ethernet hdr, IP hdr and UDP hdr in new_pkt_data
@@ -3099,29 +3246,29 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN)
                 (void)*new_pkt_data--;
 
-            header->caplen = header->len = ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN + payload_len_opt;
+            header->caplen = header->len = ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN + payload_len_opt;
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN;
+            header->caplen = header->len = ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN;
 
         /* update UDP length */
-        udp_hdr->uh_ulen = htons(header->caplen - (ETHER_HDR_LEN + ip_hlb));
+        udp_hdr->uh_ulen = htons(header->caplen - (ETH_HDR_LEN + ip_hlb));
 
         /* update IP total length */
-        ip_hdr->ip_len = htons(header->caplen - ETHER_HDR_LEN);
+        ip_hdr->ip_len = htons(header->caplen - ETH_HDR_LEN);
 
         /* go pass Ethernet hdr in pkt_data */
         i = 0;
-        while (i++ < ETHER_HDR_LEN)
+        while (i++ < ETH_HDR_LEN)
             (void)*pkt_data++;
 
         /*
@@ -3133,7 +3280,7 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
 
         /* reset pointer to the beginning of pkt_data */
         i = 0;
-        while (i++ < ETHER_HDR_LEN)
+        while (i++ < ETH_HDR_LEN)
             (void)*pkt_data--;
     }
 
@@ -3144,7 +3291,7 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
      * recalculate checksum for UDP hdr (cover IP pseudo hdr + UDP hdr + trailing data)
      * if we have enough data
      */
-    if (csum_opt && ip_fo == 0 && header->caplen >= (ETHER_HDR_LEN + ntohs(ip_hdr->ip_len)))
+    if (csum_opt && ip_fo == 0 && header->caplen >= (ETH_HDR_LEN + ntohs(ip_hdr->ip_len)))
         update_udp_cksum(pkt_data, ip_hdr, udp_hdr, &ip_hlb);
 
     free(ip_hdr);
@@ -3156,7 +3303,7 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, udp_hdr, UDP_HDR_LEN);
@@ -3164,7 +3311,7 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     udp_hdr = NULL;
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + ip_hlb)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + ip_hlb)
         (void)*new_pkt_data--;
 
     /* no further editing support after UDP hdr */
@@ -3178,7 +3325,7 @@ uint16_t parse_udp(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_s
     else if (layer_opt == 3)
         return (header->caplen);
     else
-        return (ETHER_HDR_LEN + ip_hlb + UDP_HDR_LEN);
+        return (ETH_HDR_LEN + ip_hlb + UDP_HDR_LEN);
 }
 
 void update_udp_cksum(const uint8_t *pkt_data, struct ip *ip_hdr, struct udphdr *udp_hdr,
@@ -3236,7 +3383,7 @@ void update_udp_cksum(const uint8_t *pkt_data, struct ip *ip_hdr, struct udphdr 
     else
     {
         for (i = UDP_HDR_LEN; i < (udpp_len - sizeof(struct ippseudo)); i++)
-            udpp[i + sizeof(struct ippseudo)] = pkt_data[ETHER_HDR_LEN + *ip_hlb + i];
+            udpp[i + sizeof(struct ippseudo)] = pkt_data[ETH_HDR_LEN + *ip_hlb + i];
     }
 
     /* recalculate checksum */
@@ -3260,11 +3407,11 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     int i;
 
     /* do nothing if UDP hdr is truncated */
-    if (header->caplen < ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN)
+    if (header->caplen < ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN)
     {
         free(ip6_hdr);
         ip6_hdr = NULL;
-        return (ETHER_HDR_LEN + IP6_HDR_LEN);
+        return (ETH_HDR_LEN + IP6_HDR_LEN);
     }
 
     udp_hdr = (struct udphdr *)malloc(UDP_HDR_LEN);
@@ -3283,13 +3430,13 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
          * and reset pointer to the beginning of new_pkt_data
          */
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
             (void)*new_pkt_data++;
 
         memcpy(udp_hdr, new_pkt_data, UDP_HDR_LEN);
 
         i = 0;
-        while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+        while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
             (void)*new_pkt_data--;
     }
     else
@@ -3300,13 +3447,13 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
          * and reset pointer to the beginning of pkt_data
          */
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + IP6_HDR_LEN))
+        while (i++ < (ETH_HDR_LEN + IP6_HDR_LEN))
             (void)*pkt_data++;
 
         memcpy(udp_hdr, pkt_data, UDP_HDR_LEN);
 
         i = 0;
-        while (i++ < (ETHER_HDR_LEN + IP6_HDR_LEN))
+        while (i++ < (ETH_HDR_LEN + IP6_HDR_LEN))
             (void)*pkt_data--;
     }
 
@@ -3324,9 +3471,9 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
         if (header_opt == UDP && payload_len_opt > 0)
         {
             /* truncate payload if it is too large */
-            if ((payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN) > ETHER_MAX_LEN)
+            if ((payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN) > ETH_MAX_LEN)
                 payload_len_opt -=
-                    (payload_len_opt + ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN) - ETHER_MAX_LEN;
+                    (payload_len_opt + ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN) - ETH_MAX_LEN;
 
             /*
              * go pass pcap hdr, Ethernet hdr, IPv6 hdr and UDP hdr in new_pkt_data
@@ -3334,24 +3481,23 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
              * and reset pointer to the beginning of new_pkt_data
              */
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN)
                 (void)*new_pkt_data++;
 
             memcpy(new_pkt_data, payload_opt, payload_len_opt);
 
             i = 0;
-            while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN)
+            while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN)
                 (void)*new_pkt_data--;
 
             header->caplen = header->len =
-                ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN + payload_len_opt;
+                ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN + payload_len_opt;
         }
         else
-            header->caplen = header->len = ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN;
+            header->caplen = header->len = ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN;
 
         /* update UDP length and IPv6 payload length */
-        udp_hdr->uh_ulen = ip6_hdr->ip6_plen =
-            htons(header->caplen - (ETHER_HDR_LEN + IP6_HDR_LEN));
+        udp_hdr->uh_ulen = ip6_hdr->ip6_plen = htons(header->caplen - (ETH_HDR_LEN + IP6_HDR_LEN));
         write_ip6_hdr(new_pkt_data, ip6_hdr);
     }
 
@@ -3359,7 +3505,7 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
      * recalculate checksum for UDP hdr (cover IPv6 pseudo hdr + UDP hdr + trailing data)
      * if we have enough data
      */
-    if (csum_opt && header->caplen >= (ETHER_HDR_LEN + IP6_HDR_LEN + ntohs(ip6_hdr->ip6_plen)))
+    if (csum_opt && header->caplen >= (ETH_HDR_LEN + IP6_HDR_LEN + ntohs(ip6_hdr->ip6_plen)))
         update_udp6_cksum(pkt_data, ip6_hdr, udp_hdr);
 
     free(ip6_hdr);
@@ -3371,7 +3517,7 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
      * and reset pointer to the beginning of new_pkt_data
      */
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
         (void)*new_pkt_data++;
 
     memcpy(new_pkt_data, udp_hdr, UDP_HDR_LEN);
@@ -3379,7 +3525,7 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     udp_hdr = NULL;
 
     i = 0;
-    while (i++ < PCAP_HDR_LEN + ETHER_HDR_LEN + IP6_HDR_LEN)
+    while (i++ < PCAP_HDR_LEN + ETH_HDR_LEN + IP6_HDR_LEN)
         (void)*new_pkt_data--;
 
     /* no further editing support after UDP hdr */
@@ -3393,7 +3539,7 @@ uint16_t parse_udp6(const uint8_t *pkt_data, uint8_t *new_pkt_data, struct pcap_
     else if (layer_opt == 3)
         return (header->caplen);
     else
-        return (ETHER_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN);
+        return (ETH_HDR_LEN + IP6_HDR_LEN + UDP_HDR_LEN);
 }
 
 void update_udp6_cksum(const uint8_t *pkt_data, struct ip6 *ip6_hdr, struct udphdr *udp_hdr)
@@ -3450,7 +3596,7 @@ void update_udp6_cksum(const uint8_t *pkt_data, struct ip6 *ip6_hdr, struct udph
     else
     {
         for (i = UDP_HDR_LEN; i < (udpp_len - sizeof(struct ip6pseudo)); i++)
-            udpp[i + sizeof(struct ip6pseudo)] = pkt_data[ETHER_HDR_LEN + IP6_HDR_LEN + i];
+            udpp[i + sizeof(struct ip6pseudo)] = pkt_data[ETH_HDR_LEN + IP6_HDR_LEN + i];
     }
 
     /* recalculate checksum */
@@ -3483,6 +3629,60 @@ void update_udp_hdr(struct udphdr *udp_hdr)
              (udpopt->uh_dport_flag == FIELD_REPLACE_RAND &&
               udp_hdr->uh_dport == htons(udpopt->uh_old_dport)))
         udp_hdr->uh_dport = htons(get_random_number(UINT16_MAX));
+}
+
+void set_random_eth_addr(uint8_t *eth_addr)
+{
+    uint64_t r = tinymt64_generate_uint64(&tinymt); /* 8 segments of random 8 bits */
+
+    for (uint8_t i = 0; i < ETH_ADDR_LEN; i++)
+    {
+        eth_addr[i] = (uint8_t)(r & 0xff);
+        r >>= 8; /* use next segment of random 8 bits */
+    }
+}
+
+void set_random_in_addr(struct in_addr *addr, struct in_addr_opt *opt)
+{
+    uint8_t rem_bits = opt->rand_bits;              /* remaining last/right bits to randomize */
+    uint64_t r = tinymt64_generate_uint64(&tinymt); /* 8 segments of random 8 bits */
+
+    for (uint8_t i = 0; i < 4; i++) /* loop 4 octets */
+    {
+        rem_bits -= (rem_bits > 8) ? 8 : rem_bits;
+
+        opt->new.s_addr = opt->new.s_addr ^ ((opt->new.s_addr ^ r) & ~opt->netmask.s_addr);
+
+        if (rem_bits == 0)
+            break;
+
+        r >>= 8; /* use next segment of random 8 bits */
+    }
+    memcpy(addr, &opt->new, sizeof(struct in_addr));
+}
+
+void set_random_in6_addr(struct in6_addr *addr, struct in6_addr_opt *opt)
+{
+    uint8_t rem_bits = opt->rand_bits;              /* remaining last/right bits to randomize */
+    uint64_t r = tinymt64_generate_uint64(&tinymt); /* 8 segments of random 8 bits */
+
+    for (uint8_t i = 15; i >= 0; i--) /* loop 16 octets starting from last octet */
+    {
+        rem_bits -= (rem_bits > 8) ? 8 : rem_bits;
+
+        opt->new.s6_addr[i] =
+            opt->new.s6_addr[i] ^ ((opt->new.s6_addr[i] ^ r) & ~opt->netmask.s6_addr[i]);
+
+        if (rem_bits == 0)
+            break;
+
+        r >>= 8; /* use next segment of random 8 bits */
+
+        /* exhausted all 8 segments, regenerate new segments of random 8 bits */
+        if (i % 8 == 0)
+            r = tinymt64_generate_uint64(&tinymt);
+    }
+    memcpy(addr, &opt->new, sizeof(struct in6_addr));
 }
 
 uint64_t get_random_number(uint64_t max_val)
@@ -3592,42 +3792,36 @@ void error(const char *fmt, ...)
     exit(EXIT_FAILURE);
 }
 
-/*
- * Reference: FreeBSD's /usr/src/lib/libc/net/ether_addr.c
- *
- * Copyright (c) 1995
- *      Bill Paul <wpaul@ctr.columbia.edu>.  All rights reserved.
- *
- */
-struct ether_addr *ether_aton(const char *a)
+int eth_aton(const char *cp, uint8_t *eth_addr)
 {
     int i;
-    static struct ether_addr o;
     unsigned int o0, o1, o2, o3, o4, o5;
 
-    i = sscanf(a, "%x:%x:%x:%x:%x:%x", &o0, &o1, &o2, &o3, &o4, &o5);
+    i = sscanf(cp, "%x:%x:%x:%x:%x:%x", &o0, &o1, &o2, &o3, &o4, &o5);
 
     if (i != 6)
-        return (NULL);
+    {
+        eth_addr = NULL;
+        return 0;
+    }
 
-    o.octet[0] = o0;
-    o.octet[1] = o1;
-    o.octet[2] = o2;
-    o.octet[3] = o3;
-    o.octet[4] = o4;
-    o.octet[5] = o5;
-
-    return ((struct ether_addr *)&o);
+    eth_addr[0] = o0;
+    eth_addr[1] = o1;
+    eth_addr[2] = o2;
+    eth_addr[3] = o3;
+    eth_addr[4] = o4;
+    eth_addr[5] = o5;
+    return 1;
 }
 
 void usage(void)
 {
     (void)fprintf(stderr,
-                  "%s version %s\n"
+                  "%s version %s, Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>\n"
                   "%s\n"
                   "Usage: %s [-I input] [-O output] [-L layer] [-X payload] [-C]\n"
                   "                 [-M linktype] [-D offset] [-R range] [-S timeframe]\n"
-                  "                 [-N repeat] [-P seed] [-T header]\n"
+                  "                 [-N repeat] [-G gaprange] [-P seed] [-T header]\n"
                   "                 [header-specific-options] [-h]\n"
                   "\nOptions:\n"
                   " -I input        Input pcap based trace file. Typically, input should be a\n"
@@ -3677,6 +3871,11 @@ void usage(void)
                   "                 a 1-packet trace file.\n"
                   "                 Example: -N 100000\n"
                   "                 -N flag is evaluated after -R and -S flag.\n"
+                  " -G gaprange     Apply inter-packet gap between packets in microseconds from\n"
+                  "                 1 to (2^31 - 1). Values in 'gaprange' are inclusive and\n"
+                  "                 selected randomly. A single value implies a fixed gap.\n"
+                  "                 Example: -G 1000-10000 or -G 1000\n"
+                  "                 -G flag is evaluated after -R, -S, and -N flag.\n"
                   " -P seed         Positive integer to seed the random number generator (RNG)\n"
                   "                 used, for example, to  generate random  port number.\n"
                   "                 If unset, current timestamp will be used as the RNG seed.\n"

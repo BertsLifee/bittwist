@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * bittwist - pcap based ethernet packet generator
- * Copyright (C) 2006 - 2023 Addy Yeow Chin Heng <ayeowch@gmail.com>
+ * Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -29,24 +29,25 @@ int32_t thiszone; /* offset from GMT to local time in seconds */
 char ebuf[PCAP_ERRBUF_SIZE]; /* pcap error buffer */
 
 /* options */
-int vflag = 0;              /* 1 - print timestamp, 2 - print timestamp and hex data */
+int vflag = 0;              /* 1 = print timestamp, 2 = print timestamp and hex data */
 int len = 0;                /* packet length to send (-1 = captured, 0 = on wire, or positive
                                value <= 1514) */
 int pps = 0;                /* packets per second */
-int interval = 0;           /* interval between packets in seconds (0 means actual interval
-                               will be used instead) */
+int gap = 0;                /* gap/interval between packets in seconds */
 int linerate = -1;          /* limit packet throughput at the specified Mbps (0 means no limit) */
 uint64_t bps = 0;           /* bits per second converted from linerate */
+bool use_timestamp = true;  /* true = use captured interval, false = custom interval */
 unsigned long max_pkts = 0; /* send up to the specified number of packets */
 
 /* data */
-pcap_t *pd = NULL;         /* pcap descriptor */
-uint8_t *pkt_data = NULL;  /* packet data including the link-layer header */
-FILE **trace_files = NULL; /* pointers to trace files */
 int trace_files_count = 0;
+trace_file_t **trace_files = NULL;        /* pointers to trace files */
+pcap_t *pd = NULL;                        /* pcap descriptor */
+uint8_t pkt_data[ETH_MAX_LEN];            /* packet data including the link-layer header */
+struct pcap_sf_pkthdr header;             /* pcap header per packet */
 struct timespec sleep_ts = {0, 0};        /* sleep duration to shape throughput */
 struct timespec curr_ts;                  /* timestamp of current packet */
-struct timespec prev_ts = {0, 0};         /* timestamp of previous packet */
+struct timespec prev_ts;                  /* timestamp of previous packet */
 struct token_bucket tb_pps = {0, 0};      /* token bucket for shaping throughput at pps */
 struct token_bucket tb_linerate = {0, 0}; /* token bucket for shaping throughput at linerate */
 
@@ -123,9 +124,8 @@ int main(int argc, char **argv)
             len = strtol(optarg, NULL, 0);
             if (len != -1 && len != 0)
             {
-                if (len < ETHER_HDR_LEN || len > ETHER_MAX_LEN)
-                    error("value for length must be between %d to %d", ETHER_HDR_LEN,
-                          ETHER_MAX_LEN);
+                if (len < ETH_HDR_LEN || len > ETH_MAX_LEN)
+                    error("value for length must be between %d to %d", ETH_HDR_LEN, ETH_MAX_LEN);
             }
             break;
         case 'l':
@@ -141,16 +141,19 @@ int main(int argc, char **argv)
             tb_pps.last_add = time(NULL);
             break;
         case 't':
-            interval = strtol(optarg, NULL, 0);
-            if (interval < 1 || interval > INTERVAL_MAX)
-                error("value for interval must be between 1 to %d", INTERVAL_MAX);
+            gap = strtol(optarg, NULL, 0);
+            if (gap < 1 || gap > GAP_MAX)
+                error("value for gap must be between 1 to %d", GAP_MAX);
             break;
         case 'r':
             linerate = strtol(optarg, NULL, 0);
             if (linerate < LINERATE_MIN || linerate > LINERATE_MAX)
                 error("value for rate must be between %d to %d", LINERATE_MIN, LINERATE_MAX);
-            bps = (uint64_t)linerate * 1000000;
-            tb_linerate.last_add = time(NULL);
+            if (linerate > 0)
+            {
+                bps = (uint64_t)linerate * 1000000;
+                tb_linerate.last_add = time(NULL);
+            }
             break;
         case 'h':
         default:
@@ -158,46 +161,24 @@ int main(int argc, char **argv)
         }
     }
 
+    /* don't use captured interval if any of the custom interval options is set */
+    if (pps > 0 || gap > 0 || linerate >= 0)
+        use_timestamp = false;
+
     if (device == NULL)
         error("device not specified");
 
     if (argv[optind] == NULL)
         error("trace file not specified");
 
-    notice("sending packets through %s", device);
-
-    /* empty error buffer to grab warning message (if exist) from pcap_open_live() below */
-    *ebuf = '\0';
-
-    /* note that we are doing this for sending packets, not capture */
-    pd = pcap_open_live(device, ETHER_MAX_LEN, /* portion of packet to capture */
-                        1,                     /* promiscuous mode is on */
-                        1000,                  /* read timeout, in milliseconds */
-                        ebuf);
-
-    if (pd == NULL)
-        error("%s", ebuf);
-    else if (*ebuf)
-        notice("%s", ebuf); /* warning message from pcap_open_live() above */
-
-    /* buffer to store data for each packet including its link-layer header, freed in cleanup() */
-    pkt_data = (uint8_t *)malloc(sizeof(uint8_t) * ETHER_MAX_LEN);
-    if (pkt_data == NULL)
-        error("malloc(): cannot allocate memory for pkt_data");
-    memset(pkt_data, 0, ETHER_MAX_LEN);
-
     /* set signal handler for SIGINT (Control-C) */
     (void)signal(SIGINT, cleanup);
 
-    trace_files = malloc((argc - optind) * sizeof(FILE *));
-    for (i = optind; i < argc; i++)
-    {
-        FILE *fp;
-        notice("trace file: %s", argv[i]);
-        if ((fp = fopen(argv[i], "rb")) == NULL)
-            error("fopen(): error reading %s", argv[i]);
-        trace_files[trace_files_count++] = fp;
-    }
+    load_trace_files(argc, argv);
+
+    init_pcap(device);
+
+    notice("sending packets through %s", device);
 
     if (gettimeofday(&start, NULL) == -1)
         notice("gettimeofday(): %s", strerror(errno));
@@ -206,7 +187,7 @@ int main(int argc, char **argv)
     while (1)
     {
         for (i = 0; i < trace_files_count; i++) /* for each trace file */
-            send_packets(device, trace_files[i], argv[i + optind]);
+            send_packets(trace_files[i]);
 
         if (loop > 1)
             loop--;
@@ -220,48 +201,87 @@ int main(int argc, char **argv)
     exit(EXIT_SUCCESS);
 }
 
-void send_packets(char *device, FILE *fp, char *trace_file)
+void load_trace_files(int argc, char **argv)
 {
-    struct pcap_file_header preamble;
-    struct pcap_sf_pkthdr header;
+    struct pcap_file_header preamble; /* pcap file header per trace file */
+
+    trace_files = malloc((argc - optind) * sizeof(trace_file_t *));
+    if (trace_files == NULL)
+        error("malloc(): cannot allocate memory for trace_files");
+
+    for (int i = optind; i < argc; i++)
+    {
+        trace_file_t *trace_file = malloc(sizeof(trace_file_t));
+        if (trace_file == NULL)
+            error("malloc(): cannot allocate memory for trace_file");
+
+        trace_file->filename = argv[i];
+
+        if ((trace_file->fp = fopen(trace_file->filename, "rb")) == NULL)
+            error("fopen(): error reading %s", trace_file->filename);
+
+        /*
+         * check preamble of each trace file.
+         * preamble occupies the first 24 bytes of a trace file
+         */
+        if (fread(&preamble, PCAP_PREAMBLE_LEN, 1, trace_file->fp) == 0)
+            error("fread(): error reading %s", trace_file->filename);
+
+        if (preamble.magic != PCAP_MAGIC && preamble.magic != NSEC_PCAP_MAGIC)
+            error("%s is not a valid pcap based trace file", trace_file->filename);
+
+        if (preamble.magic == NSEC_PCAP_MAGIC)
+            trace_file->nsec = true;
+        else
+            trace_file->nsec = false;
+
+        trace_files[trace_files_count++] = trace_file;
+    }
+}
+
+void init_pcap(char *device)
+{
+    /* empty error buffer to grab warning message (if exist) from pcap_open_live() below */
+    *ebuf = '\0';
+
+    /* note that we are doing this for sending packets, not capture */
+    pd = pcap_open_live(device, ETH_MAX_LEN, /* portion of packet to capture */
+                        1,                   /* promiscuous mode is on */
+                        1000,                /* read timeout, in milliseconds */
+                        ebuf);
+
+    if (pd == NULL)
+        error("%s", ebuf);
+    else if (*ebuf)
+        notice("%s", ebuf); /* warning message from pcap_open_live() above */
+}
+
+void send_packets(trace_file_t *trace_file)
+{
     int pkt_len; /* packet length to send */
-    int ret;
-    int nsec = 0; /* set to 1 if we have timestamps in nanosecond resolution */
     struct pcap_timeval p_ts;
     struct timeval tv;
-    sigset_t block_sig;
 
-    (void)sigemptyset(&block_sig);
-    (void)sigaddset(&block_sig, SIGINT);
-
-    /* reset trace file pointer */
-    if (fseek(fp, 0, SEEK_SET) != 0)
-        error("fseek(): error reading %s", trace_file);
-
-    /* preamble occupies the first 24 bytes of a trace file */
-    if (fread(&preamble, sizeof(preamble), 1, fp) == 0)
-        error("fread(): error reading %s", trace_file);
-    if (preamble.magic != PCAP_MAGIC && preamble.magic != NSEC_PCAP_MAGIC)
-        error("%s is not a valid pcap based trace file", trace_file);
-    if (preamble.magic == NSEC_PCAP_MAGIC)
-        nsec = 1;
+    /* reset trace file pointer moving past the pcap file header */
+    if (fseek(trace_file->fp, PCAP_PREAMBLE_LEN, SEEK_SET) != 0)
+        error("fseek(): error reading %s", trace_file->filename);
 
     /*
      * loop through the remaining data by reading the packet header first.
      * packet header (16 bytes) = timestamp + length
      */
-    while ((ret = fread(&header, sizeof(header), 1, fp)))
+    while (fread(&header, PCAP_HDR_LEN, 1, trace_file->fp) == 1)
     {
-        if (ret == 0)
-            error("fread(): error reading %s", trace_file);
-
         /* copy timestamp for current packet */
-        memcpy(&p_ts, &header.ts, sizeof(p_ts));
-        curr_ts.tv_sec = p_ts.tv_sec;
-        if (nsec == 1)
-            curr_ts.tv_nsec = p_ts.tv_usec;
-        else
-            curr_ts.tv_nsec = p_ts.tv_usec * 1000;
+        if (use_timestamp)
+        {
+            p_ts = header.ts;
+            curr_ts.tv_sec = p_ts.tv_sec;
+            if (trace_file->nsec)
+                curr_ts.tv_nsec = p_ts.tv_usec;
+            else
+                curr_ts.tv_nsec = p_ts.tv_usec * 1000;
+        }
 
         if (len < 0) /* captured length */
             pkt_len = header.caplen;
@@ -270,13 +290,12 @@ void send_packets(char *device, FILE *fp, char *trace_file)
         else /* user specified length */
             pkt_len = len;
 
-        throttle(pkt_len * 8);
+        /* skip throttling if linerate is set to 0, i.e. send each packet immediately */
+        if (linerate != 0)
+            throttle(pkt_len * 8);
 
-        load_packet(fp, pkt_len, &header, trace_file);
+        load_packet(trace_file, pkt_len, &header);
 
-        (void)sigprocmask(SIG_BLOCK, &block_sig, NULL); /* hold SIGINT */
-
-        /* finish the injection and verbose output before we give way to SIGINT */
         if (pcap_sendpacket(pd, pkt_data, pkt_len) == -1)
         {
             notice("%s", pcap_geterr(pd));
@@ -288,7 +307,7 @@ void send_packets(char *device, FILE *fp, char *trace_file)
             bytes_sent += pkt_len;
 
             /* copy timestamp for previous packet sent */
-            memcpy(&prev_ts, &curr_ts, sizeof(struct timespec));
+            prev_ts = curr_ts;
 
             /* verbose output */
             if (vflag)
@@ -309,8 +328,6 @@ void send_packets(char *device, FILE *fp, char *trace_file)
             }
         }
 
-        (void)sigprocmask(SIG_UNBLOCK, &block_sig, NULL); /* release SIGINT */
-
         if ((max_pkts > 0) && (pkts_sent >= max_pkts))
             cleanup(0);
     } /* end while */
@@ -318,24 +335,9 @@ void send_packets(char *device, FILE *fp, char *trace_file)
 
 void throttle(int bits)
 {
-    /*
-     * always send first packet immediately.
-     * if linerate is set to 0, send each packet immediately
-     */
-    if (linerate == 0 || !timespecisset(&prev_ts))
+    /* always send first packet immediately */
+    if (pkts_sent == 0)
         return;
-
-    if (interval > 0) /* user specified interval is in seconds only */
-        sleep_ts.tv_sec = interval;
-    else /* use captured interval */
-    {
-        /*
-         * fallback to last sleep_ts if curr_ts < prev_ts which can happen when looping over
-         * multiple trace file
-         */
-        if (timespeccmp(&curr_ts, &prev_ts, >=))
-            timespecsub(&curr_ts, &prev_ts, &sleep_ts);
-    }
 
     if (pps)
     {
@@ -349,31 +351,43 @@ void throttle(int bits)
         while (!token_bucket_remove(&tb_linerate, bits, bps))
             usleep(1);
     }
-    else if (timespecisset(&sleep_ts))
+    else
     {
-        if (sleep_ts.tv_sec > INTERVAL_MAX)
+        if (gap > 0) /* user specified inter-packet gap in seconds */
+            sleep_ts.tv_sec = gap;
+        else /* use captured interval */
+        {
+            /*
+             * fallback to last sleep_ts if curr_ts < prev_ts which can happen when looping over
+             * multiple trace file
+             */
+            if (timespeccmp(&curr_ts, &prev_ts, >=))
+                timespecsub(&curr_ts, &prev_ts, &sleep_ts);
+        }
+
+        if (sleep_ts.tv_sec > GAP_MAX)
             notice("warning: next packet has timestamp over %lu seconds away", sleep_ts.tv_sec);
         if (nanosleep(&sleep_ts, NULL) == -1)
             notice("nanosleep(): %s", strerror(errno));
     }
 }
 
-void load_packet(FILE *fp, int pkt_len, struct pcap_sf_pkthdr *header, char *trace_file)
+void load_packet(trace_file_t *trace_file, int pkt_len, struct pcap_sf_pkthdr *header)
 {
     int copy_len = pkt_len < header->caplen ? pkt_len : header->caplen;
 
-    if (fread(pkt_data, sizeof(char), copy_len, fp) != copy_len)
-        error("fread(): error reading %s", trace_file);
+    if (fread(pkt_data, 1, copy_len, trace_file->fp) != copy_len)
+        error("fread(): error reading %s", trace_file->filename);
 
     /* pad trailing bytes with zeros */
-    for (int i = copy_len; i < pkt_len; i++)
-        pkt_data[i] = PKT_PAD;
+    if (copy_len < pkt_len)
+        memset(pkt_data + copy_len, PKT_PAD, pkt_len - copy_len);
 
     /* move file pointer to the end of this packet data */
     if (copy_len < header->caplen)
     {
-        if (fseek(fp, header->caplen - copy_len, SEEK_CUR) != 0)
-            error("fseek(): error reading %s", trace_file);
+        if (fseek(trace_file->fp, header->caplen - copy_len, SEEK_CUR) != 0)
+            error("fseek(): error reading %s", trace_file->filename);
     }
 }
 
@@ -404,11 +418,8 @@ void info(void)
 
 void cleanup(int signum)
 {
-    free(pkt_data);
-    pkt_data = NULL;
-
     for (int i = 0; i < trace_files_count; i++)
-        fclose(trace_files[i]);
+        fclose(trace_files[i]->fp);
     free(trace_files);
     trace_files = NULL;
 
@@ -543,10 +554,10 @@ void error(const char *fmt, ...)
 void usage(void)
 {
     (void)fprintf(stderr,
-                  "%s version %s\n"
+                  "%s version %s, Copyright (C) 2006 - 2023 Addy Yeow <ayeowch@gmail.com>\n"
                   "%s\n"
                   "Usage: %s [-d] [-v] [-i interface] [-s length] [-l loop] [-c count]\n"
-                  "                [-p pps] [-t interval] [-r rate] [-h] pcap-file(s)\n"
+                  "                [-p pps] [-t gap] [-r rate] [-h] pcap-file(s)\n"
                   "\nOptions:\n"
                   " -d             Print a list of network interfaces available.\n"
                   " -v             Print timestamp for each packet.\n"
@@ -563,9 +574,9 @@ void usage(void)
                   "                Default is to send all packets from 'pcap-file(s)'.\n"
                   " -p pps         Send 'pps' packets per second.\n"
                   "                Value for 'pps' must be between 1 to %d.\n"
-                  " -t interval    Set inter-packet delay to 'interval' in seconds, ignoring the\n"
-                  "                actual interval between packets in 'pcap-file(s)'.\n"
-                  "                Value for 'interval' must be between 1 to %d.\n"
+                  " -t gap         Set inter-packet 'gap' in seconds, ignoring the captured\n"
+                  "                interval between packets in 'pcap-file(s)'.\n"
+                  "                Value for 'gap' must be between 1 to %d.\n"
                   " -r rate        Limit the sending to 'rate' Mbps.\n"
                   "                Value for 'rate' must be between %d to %d.\n"
                   "                This flag is intended to set the desired packet throughput.\n"
@@ -574,7 +585,7 @@ void usage(void)
                   "                try -r 0. This flag is typically used with -l 0 to send\n"
                   "                'pcap-file(s)' until stopped.\n"
                   " -h             Print version information and usage.\n",
-                  program_name, BITTWIST_VERSION, pcap_lib_version(), program_name, ETHER_HDR_LEN,
-                  ETHER_MAX_LEN, PPS_MAX, INTERVAL_MAX, LINERATE_MIN, LINERATE_MAX);
+                  program_name, BITTWIST_VERSION, pcap_lib_version(), program_name, ETH_HDR_LEN,
+                  ETH_MAX_LEN, PPS_MAX, GAP_MAX, LINERATE_MIN, LINERATE_MAX);
     exit(EXIT_SUCCESS);
 }
