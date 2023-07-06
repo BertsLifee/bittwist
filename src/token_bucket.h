@@ -30,11 +30,12 @@ Sample usage with sample.c below:
 
 int main()
 {
-    struct token_bucket tb = {0, time(NULL)};
+    struct token_bucket tb;
     uint64_t bps = 1000000000;    // Target throughput at 1 Gbps
     uint64_t packet_size = 12112; // 1514 bytes
     uint64_t packets = 1000000;   // 1 million packets
     int i = 1;
+    clock_gettime(CLOCK_MONOTONIC, &tb.last_add);
     do
     {
         while (!token_bucket_remove(&tb, packet_size, bps))
@@ -45,9 +46,9 @@ int main()
 }
 
 $ gcc -I. sample.c token_bucket.c && time ./a.out
-real    0m12.126s
-user    0m0.060s
-sys     0m0.241s
+real    0m12.113s
+user    0m0.391s
+sys     0m0.392s
 ---
 
 The time taken should be close to (packet_size_in_bits * packets) / bits_per_second
@@ -63,14 +64,10 @@ The time taken should be close to (packet_size_in_bits * packets) / bits_per_sec
 #include <time.h>
 #include <unistd.h>
 
-/*
- * For most use cases, the token bucket should be initialized using
- * struct token_bucket tb = {0, time(NULL)};
- */
 struct token_bucket
 {
-    uint64_t tokens; /* available tokens (bits) in bucket */
-    time_t last_add; /* timestamp in seconds */
+    double tokens;            /* available tokens (bits) in bucket */
+    struct timespec last_add; /* timestamp */
 };
 
 void token_bucket_add(struct token_bucket *tb, uint64_t bps);

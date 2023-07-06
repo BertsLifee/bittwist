@@ -23,9 +23,14 @@
 
 void token_bucket_add(struct token_bucket *tb, uint64_t bps)
 {
-    time_t now = time(NULL);
-    tb->tokens = tb->tokens + (bps * (now - tb->last_add));
-    tb->tokens = (tb->tokens > bps) ? bps : tb->tokens;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    uint64_t elapsed_ns =
+        (now.tv_sec - tb->last_add.tv_sec) * 1000000000 + (now.tv_nsec - tb->last_add.tv_nsec);
+
+    tb->tokens += bps * (double)elapsed_ns / 1000000000;
+    tb->tokens = (tb->tokens < bps) ? tb->tokens : bps;
     tb->last_add = now;
 }
 
@@ -36,6 +41,7 @@ bool token_bucket_remove(struct token_bucket *tb, uint64_t bits, uint64_t bps)
 
     if (tb->tokens < bits)
         return false;
+
     tb->tokens -= bits;
     return true;
 }

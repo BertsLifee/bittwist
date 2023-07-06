@@ -20,10 +20,12 @@
 
 import hashlib
 import logging
-import re
 import subprocess
 import sys
 from pathlib import Path
+
+from .benchmark_bittwist import get_ipg_from_output
+from .benchmark_bittwist import get_stats_from_output
 
 relbin = Path("/usr/local/bin/bittwist")
 if not relbin.exists():
@@ -93,10 +95,9 @@ def test_bittwist_2M_speed():
     This should gives program's theoretical limit before hitting actual NIC.
 
     This throughput can be expected of current dev version:
-    2000000 packets (3028000000 bytes) sent
-    Throughput = 6211.94 Mbps
-    Throughput = 6.21 Gbps
-    Elapsed time = 3.899588 seconds
+    sent = 2000000 packets, 24224000000 bits, 3028000000 bytes
+    throughput = 518668 pps, 6282.1104 Mbps, 6.2821 Gbps
+    elapsed time = 3.856029 seconds
     """
     values = []  # Elapsed times in seconds.
 
@@ -108,15 +109,9 @@ def test_bittwist_2M_speed():
 
         output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
         output = output.decode("utf-8")
-        lines = [line.strip() for line in output.strip().split("\n")]
-        tail_output = "\n".join(lines[-5:])
-        logging.info(f"output (last 5 lines)={tail_output}")
-
-        assert "elapsed time" in output
-        elapsed_time_line = lines[-1]
-        logging.info(f"{ver} - {elapsed_time_line}")
-
-        values.append(float(re.findall(r"\d+\.\d+", elapsed_time_line)[0]))
+        elapsed_s = get_stats_from_output(output)["elapsed_s"]
+        logging.info(f"{ver} - {elapsed_s}")
+        values.append(elapsed_s)
 
     # Elapsed times should be less than 1 second apart.
     assert all(abs(values[i] - values[i + 1]) <= 1 for i in range(len(values) - 1))
@@ -128,29 +123,15 @@ def test_bittwist_1000us():
     inter-packet gap.
     """
     pcap_file = Path(__file__).resolve().parent / "pcap" / "1000us.pcap"
-    command = f"sudo {devbin} -vv -i lo -l 3 {pcap_file}"
+    command = f"sudo {devbin} -v -i lo -l 10 {pcap_file}"
     output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
     output = output.decode("utf-8")
-    lines = output.split("\n")
+    ipg = get_ipg_from_output(output)
 
-    # Look for lines matching pattern e.g. "10:53:46.295748 #6 (42 bytes)"
-    pattern = r"(\d{2}):(\d{2}):(\d{2})\.(\d+) #\d+ \(\d+ bytes\)"
-    deltas = []
-    prev_us = None
-    for line in lines:
-        match = re.match(pattern, line)
-        if not match:
-            continue
-        hh, mm, ss, us = match.groups()
-        curr_us = (
-            (int(hh) * 3_600_000_000)
-            + (int(mm) * 60_000_000)
-            + (int(ss) * 1_000_000)
-            + int(us)
-        )
-        if prev_us:
-            deltas.append(curr_us - prev_us)
-        prev_us = curr_us
-    avg_gap = int(sum(deltas) / len(deltas))
-    logging.info(f"deltas={len(deltas)} - avg_gap={avg_gap} us")
-    assert 1000 < avg_gap < 2000
+    # Skip low deltas from first packet in trace file.
+    ipg = [v for v in ipg if v > 100]
+
+    avg_ipg = int(sum(ipg) / len(ipg))
+    logging.info(f"ipg={len(ipg)} - avg_ipg={avg_ipg} us")
+    assert len(ipg) == 110
+    assert 990 < avg_ipg < 1010  # 10 us tolerance.

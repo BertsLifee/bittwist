@@ -63,7 +63,7 @@ struct pcap_sf_pkthdr
     bpf_u_int32 len;        /* length this packet (off wire) */
 };
 
-#define BITTWIST_VERSION "3.7"
+#define BITTWIST_VERSION "3.8"
 #define BITTWISTE_VERSION BITTWIST_VERSION
 
 #define ETH_ADDR_LEN 6   /* Ethernet address length */

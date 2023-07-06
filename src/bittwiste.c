@@ -56,8 +56,8 @@ struct tcpopt *tcpopt;     /* TCP options */
 struct udpopt *udpopt;     /* UDP options */
 
 /* stats */
-static unsigned long pkts = 0;
-static unsigned long bytes = 0;
+static uint64_t pkts = 0;
+static uint64_t bytes = 0;
 
 int main(int argc, char **argv)
 {

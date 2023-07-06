@@ -1,0 +1,278 @@
+[
+  {
+    "0.5": [
+      {
+        "pkts": 10,
+        "ipg_us": {
+          "expected": 2000000,
+          "actual": 2000076.2,
+          "diff": 0.00381
+        },
+        "elapsed_s": {
+          "expected": 20.0,
+          "actual": 20.000843,
+          "diff": 0.004215
+        }
+      },
+      {
+        "pkts": 20,
+        "ipg_us": {
+          "expected": 2000000,
+          "actual": 2000057.2,
+          "diff": 0.00286
+        },
+        "elapsed_s": {
+          "expected": 40.0,
+          "actual": 40.001225,
+          "diff": 0.003062
+        }
+      },
+      {
+        "pkts": 30,
+        "ipg_us": {
+          "expected": 2000000,
+          "actual": 2000054.0,
+          "diff": 0.0027
+        },
+        "elapsed_s": {
+          "expected": 60.0,
+          "actual": 60.001698,
+          "diff": 0.00283
+        }
+      },
+      {
+        "pkts": 40,
+        "ipg_us": {
+          "expected": 2000000,
+          "actual": 2000056.675,
+          "diff": 0.002834
+        },
+        "elapsed_s": {
+          "expected": 80.0,
+          "actual": 80.002342,
+          "diff": 0.002927
+        }
+      },
+      {
+        "pkts": 50,
+        "ipg_us": {
+          "expected": 2000000,
+          "actual": 2000050.18,
+          "diff": 0.002509
+        },
+        "elapsed_s": {
+          "expected": 100.0,
+          "actual": 100.002548,
+          "diff": 0.002548
+        }
+      }
+    ]
+  },
+  {
+    "1": [
+      {
+        "pkts": 20,
+        "ipg_us": {
+          "expected": 1000000,
+          "actual": 1000029.35,
+          "diff": 0.002935
+        },
+        "elapsed_s": {
+          "expected": 20.0,
+          "actual": 20.000633,
+          "diff": 0.003165
+        }
+      },
+      {
+        "pkts": 40,
+        "ipg_us": {
+          "expected": 1000000,
+          "actual": 1000028.95,
+          "diff": 0.002895
+        },
+        "elapsed_s": {
+          "expected": 40.0,
+          "actual": 40.001202,
+          "diff": 0.003005
+        }
+      },
+      {
+        "pkts": 60,
+        "ipg_us": {
+          "expected": 1000000,
+          "actual": 1000029.283333,
+          "diff": 0.002928
+        },
+        "elapsed_s": {
+          "expected": 60.0,
+          "actual": 60.001801,
+          "diff": 0.003002
+        }
+      },
+      {
+        "pkts": 80,
+        "ipg_us": {
+          "expected": 1000000,
+          "actual": 1000029.7375,
+          "diff": 0.002974
+        },
+        "elapsed_s": {
+          "expected": 80.0,
+          "actual": 80.002426,
+          "diff": 0.003032
+        }
+      },
+      {
+        "pkts": 100,
+        "ipg_us": {
+          "expected": 1000000,
+          "actual": 1000027.03,
+          "diff": 0.002703
+        },
+        "elapsed_s": {
+          "expected": 100.0,
+          "actual": 100.002747,
+          "diff": 0.002747
+        }
+      }
+    ]
+  },
+  {
+    "100": [
+      {
+        "pkts": 2000,
+        "ipg_us": {
+          "expected": 10000,
+          "actual": 10000.017,
+          "diff": 0.00017
+        },
+        "elapsed_s": {
+          "expected": 20.0,
+          "actual": 20.000078,
+          "diff": 0.00039
+        }
+      },
+      {
+        "pkts": 4000,
+        "ipg_us": {
+          "expected": 10000,
+          "actual": 9999.9965,
+          "diff": -3.5e-05
+        },
+        "elapsed_s": {
+          "expected": 40.0,
+          "actual": 40.000046,
+          "diff": 0.000115
+        }
+      },
+      {
+        "pkts": 6000,
+        "ipg_us": {
+          "expected": 10000,
+          "actual": 10000.002833,
+          "diff": 2.8e-05
+        },
+        "elapsed_s": {
+          "expected": 60.0,
+          "actual": 60.000084,
+          "diff": 0.00014
+        }
+      },
+      {
+        "pkts": 8000,
+        "ipg_us": {
+          "expected": 10000,
+          "actual": 10000.00425,
+          "diff": 4.2e-05
+        },
+        "elapsed_s": {
+          "expected": 80.0,
+          "actual": 80.000092,
+          "diff": 0.000115
+        }
+      },
+      {
+        "pkts": 10000,
+        "ipg_us": {
+          "expected": 10000,
+          "actual": 10000.0028,
+          "diff": 2.8e-05
+        },
+        "elapsed_s": {
+          "expected": 100.0,
+          "actual": 100.000092,
+          "diff": 9.2e-05
+        }
+      }
+    ]
+  },
+  {
+    "500000": [
+      {
+        "pkts": 10000000,
+        "ipg_us": {
+          "expected": 2,
+          "actual": 2.000001,
+          "diff": 5e-05
+        },
+        "elapsed_s": {
+          "expected": 20.0,
+          "actual": 20.005051,
+          "diff": 0.025255
+        }
+      },
+      {
+        "pkts": 20000000,
+        "ipg_us": {
+          "expected": 2,
+          "actual": 2.000002,
+          "diff": 0.0001
+        },
+        "elapsed_s": {
+          "expected": 40.0,
+          "actual": 40.011944,
+          "diff": 0.02986
+        }
+      },
+      {
+        "pkts": 30000000,
+        "ipg_us": {
+          "expected": 2,
+          "actual": 2.0,
+          "diff": 0.0
+        },
+        "elapsed_s": {
+          "expected": 60.0,
+          "actual": 60.014664,
+          "diff": 0.02444
+        }
+      },
+      {
+        "pkts": 40000000,
+        "ipg_us": {
+          "expected": 2,
+          "actual": 2.0,
+          "diff": 0.0
+        },
+        "elapsed_s": {
+          "expected": 80.0,
+          "actual": 80.01619,
+          "diff": 0.020237
+        }
+      },
+      {
+        "pkts": 50000000,
+        "ipg_us": {
+          "expected": 2,
+          "actual": 2.000001,
+          "diff": 5e-05
+        },
+        "elapsed_s": {
+          "expected": 100.0,
+          "actual": 100.019691,
+          "diff": 0.019691
+        }
+      }
+    ]
+  }
+]

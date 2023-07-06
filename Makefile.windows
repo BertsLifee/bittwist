@@ -35,7 +35,7 @@ old_mandir = ${old_prefix}/share/man/man1
 CC ?= gcc
 DEBUG = -g
 CFLAGS ?= -std=gnu17
-CFLAGS += -O2
+CFLAGS += -O3
 CFLAGS += ${DEBUG} -Wall
 SRC = src
 DOC = doc

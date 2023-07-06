@@ -42,22 +42,16 @@ To run specific test:
 pytest test_bittwiste.py::test_bittwiste_copy
 ```
 
-## bittwist baseline benchmark
+## bittwist benchmark
 
-Use iperf to measure initial localhost througput on your system.
+bittwist benchmark data can be generated using the command below:
 
-Server terminal:
 ```
-$ iperf -s -e -i 1 -l 1500
-```
-
-Client terminal:
-```
-$ iperf -c 127.0.0.1 -e -i 1
+./benchmark_bittwist.py --iface IFACE --smac SMAC --dmac DMAC --sip SIP --dip DIP
 ```
 
-Compare iperf throughput vs throughput from test_bittwist.py::test_bittwist_2M_speed when running test.sh above.
-The difference should be less than 15%.
+Sample JSON output files (benchmark_*.json) are available in the same directory as this file.
+The JSON output files are also represented as charts in https://bittwist.sourceforge.io/benchmark.html
 
 ## bittwiste benchmark
 

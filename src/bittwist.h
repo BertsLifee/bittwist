@@ -24,17 +24,27 @@
 
 #include "def.h"
 
+/* inter-packet gap from trace file represented in nanoseconds and packets per second */
+typedef struct
+{
+    uint64_t ns;
+    int pps;
+} ipg_t;
+
 typedef struct
 {
     FILE *fp;
     char *filename;
     bool nsec; /* set to true if we have timestamps in nanosecond resolution */
+    ipg_t *ipg;
 } trace_file_t;
 
 void load_trace_files(int argc, char **argv);
+void load_ipg(trace_file_t *trace_file);
 void init_pcap(char *device);
 void send_packets(trace_file_t *trace_file);
-void throttle(int bits);
+void sleep_ns(uint64_t ns);
+void throttle(trace_file_t *trace_file, uint64_t pkts, int bits);
 void load_packet(trace_file_t *trace_file, int pkt_len, struct pcap_sf_pkthdr *header);
 void info(void);
 void cleanup(int signum);

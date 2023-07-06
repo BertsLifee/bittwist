@@ -1,3 +1,11 @@
+06/07/2023: Version 3.8
+- bumped from gcc -O2 to -O3 optimization flag:
+  https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html#index-O3
+bittwist (generator)
+- added RFC 2544 benchmark data generator and benchmark page
+- improved actual inter-packet gap replay by using token bucket algorithm for
+  short IPG and self-regulated timer for long IPG
+
 27/06/2023: Version 3.7
 bittwist (generator)
 - 30% speed up when sending large pcap file
